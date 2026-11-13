@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -30,6 +32,26 @@ type Config struct {
 	SessionIdle time.Duration
 	SessionMax  time.Duration
 	LoginTTL    time.Duration
+
+	// Sessions holding any of HighPrivilegeRoles get the shorter limits below, so a stale
+	// or stolen high-privilege session is useful for much less time.
+	HighPrivilegeRoles  []Role
+	HighPrivSessionIdle time.Duration
+	HighPrivSessionMax  time.Duration
+}
+
+// DefaultHighPrivilegeRoles are roles whose sessions get the shorter lifetime: admin
+// (bindings, clusters, lock) and approver (signs off production experiments).
+var DefaultHighPrivilegeRoles = []Role{RoleAdmin, RoleApprover}
+
+// sessionLimits returns the idle and absolute lifetime for a session with roles.
+func (c Config) sessionLimits(roles []Role) (idle, max time.Duration) {
+	for _, r := range roles {
+		if slices.Contains(c.HighPrivilegeRoles, r) {
+			return c.HighPrivSessionIdle, c.HighPrivSessionMax
+		}
+	}
+	return c.SessionIdle, c.SessionMax
 }
 
 // Service provides the login/logout handlers and the session/CSRF middleware.
@@ -44,6 +66,13 @@ type Service struct {
 
 // NewService builds a Service.
 func NewService(cfg Config, store Store, idp IdP, logger *slog.Logger) *Service {
+	// High-privilege limits may only ever be stricter than the ordinary ones.
+	if cfg.HighPrivSessionIdle <= 0 || cfg.HighPrivSessionIdle > cfg.SessionIdle {
+		cfg.HighPrivSessionIdle = cfg.SessionIdle
+	}
+	if cfg.HighPrivSessionMax <= 0 || cfg.HighPrivSessionMax > cfg.SessionMax {
+		cfg.HighPrivSessionMax = cfg.SessionMax
+	}
 	return &Service{
 		cfg:    cfg,
 		origin: cfg.PublicURL.Scheme + "://" + cfg.PublicURL.Host,
@@ -143,24 +172,28 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	token := newToken()
 	roles := RolesFromGroups(claims.Groups)
+	idle, maxAge := s.cfg.sessionLimits(roles)
 	err = s.store.CreateSession(ctx, Session{
-		TokenHash:  hashToken(token),
-		IdentityID: identityID,
-		Roles:      roles,
-		ACR:        truncate(claims.ACR, 64),
-		AuthTime:   claims.AuthTime,
-		CSRFToken:  newToken(),
-		ExpiresAt:  s.now().Add(s.cfg.SessionMax),
+		TokenHash:   hashToken(token),
+		IdentityID:  identityID,
+		Roles:       roles,
+		ACR:         truncate(claims.ACR, 64),
+		AuthTime:    claims.AuthTime,
+		CSRFToken:   newToken(),
+		IdPSID:      truncate(claims.SID, 255),
+		IdleTimeout: idle,
+		ExpiresAt:   s.now().Add(maxAge),
 	})
 	if err != nil {
 		fail("store session", err)
 		return
 	}
 
-	http.SetCookie(w, s.sessionCookie(token, int(s.cfg.SessionMax.Seconds())))
+	http.SetCookie(w, s.sessionCookie(token, int(maxAge.Seconds())))
 	s.log.InfoContext(ctx, "login succeeded", reqID(r),
 		slog.String("issuer", claims.Issuer), slog.String("subject", claims.Subject),
-		slog.Any("roles", roles), slog.String("acr", claims.ACR))
+		slog.Any("roles", roles), slog.String("acr", claims.ACR),
+		slog.Duration("session_idle_timeout", idle), slog.Duration("session_max_age", maxAge))
 	// TODO(step 14): emit audit event auth.login.
 	http.Redirect(w, r, lr.ReturnTo, http.StatusFound)
 }
@@ -189,6 +222,68 @@ func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"logoutUrl": logoutURL})
 }
 
+// BackchannelLogout implements OIDC Back-Channel Logout 1.0. The IdP POSTs a signed logout
+// token when a user's IdP session ends (user logout elsewhere, admin "sign out", session
+// revocation); matching application sessions are deleted immediately. No cookie or CSRF
+// token is involved: the request is authenticated solely by the token's signature.
+func (s *Service) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+	// Never let the IdP keep this connection for reuse. Keycloak does not retry back-channel
+	// logouts, and a pooled keep-alive connection that went stale (API restart, redeploy,
+	// proxy idle timeout) made it drop revocations silently (NoHttpResponseException).
+	w.Header().Set("Connection", "close")
+	reject := func(reason string, err error) {
+		s.log.WarnContext(ctx, "back-channel logout rejected", reqID(r), slog.String("reason", reason), slog.Any("error", err))
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		reject("unexpected content type", nil)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		reject("unparseable body", err)
+		return
+	}
+	raw := r.PostForm.Get("logout_token")
+	if raw == "" || len(raw) > 16<<10 {
+		reject("missing or oversized logout_token", nil)
+		return
+	}
+	lt, err := s.idp.VerifyLogoutToken(ctx, raw)
+	if err != nil {
+		reject("invalid logout token", err)
+		return
+	}
+	// Revocation errs toward revoking more: a token naming a subject ends EVERY session of
+	// that subject here, not only the one matching sid. IdPs do not reliably send one token
+	// per IdP session (Keycloak's admin sign-out was observed sending a single token), and a
+	// surviving session after an explicit IdP sign-out is the failure that matters. A
+	// sid-only token revokes just the sessions created from that IdP session.
+	var (
+		n     int64
+		scope string
+	)
+	switch {
+	case lt.Subject != "":
+		scope = "subject"
+		n, err = s.store.DeleteSessionsBySubject(ctx, lt.Issuer, lt.Subject)
+	default:
+		scope = "sid"
+		n, err = s.store.DeleteSessionsBySID(ctx, lt.Issuer, lt.SID)
+	}
+	if err != nil {
+		s.log.ErrorContext(ctx, "back-channel logout: revoke sessions", reqID(r), slog.Any("error", err))
+		httpx.WriteProblem(w, r, http.StatusInternalServerError, "Internal Server Error", "")
+		return
+	}
+	s.log.InfoContext(ctx, "back-channel logout", reqID(r),
+		slog.String("issuer", lt.Issuer), slog.String("subject", lt.Subject),
+		slog.String("scope", scope), slog.Int64("sessions_revoked", n))
+	// TODO(step 14): emit audit event auth.session.revoked.
+	w.WriteHeader(http.StatusOK)
+}
+
 // RequireSession authenticates the request from the session cookie or rejects it with 401.
 // Store failures yield 503, never a pass-through (fail closed).
 func (s *Service) RequireSession(next http.Handler) http.Handler {
@@ -199,7 +294,7 @@ func (s *Service) RequireSession(next http.Handler) http.Handler {
 			return
 		}
 		th := hashToken(c.Value)
-		sess, ident, err := s.store.LookupSession(r.Context(), th, s.cfg.SessionIdle)
+		sess, ident, err := s.store.LookupSession(r.Context(), th)
 		if errors.Is(err, ErrNotFound) {
 			httpx.WriteProblem(w, r, http.StatusUnauthorized, "Unauthorized", "authentication required")
 			return

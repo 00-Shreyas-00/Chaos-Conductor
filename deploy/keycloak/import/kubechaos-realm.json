@@ -55,7 +55,10 @@
       "webOrigins": [],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:4200/##http://localhost:8080/"
+        "post.logout.redirect.uris": "http://localhost:4200/##http://localhost:8080/",
+        "backchannel.logout.url": "http://kubechaos-api.internal:8080/auth/backchannel-logout",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
       },
       "defaultClientScopes": ["basic", "profile", "email", "acr"],
       "optionalClientScopes": [],

@@ -154,6 +154,28 @@ Browser            Control plane (confidential client)          Keycloak
   requires `Origin` to equal the public origin. A double-submit cookie was not needed.
 - Keycloak independently enforces S256 PKCE, exact redirect URIs, and no implicit or
   password grants for `kubechaos-api` (verified in development).
+- **Role-tiered session lifetime.** Sessions holding a high-privilege role (`admin`,
+  `approver`) get a 10 min idle / 1 h absolute limit instead of 30 min / 8 h. Each session
+  stores its own idle timeout. Misconfiguration can only make the high-privilege limits
+  stricter, never longer than the ordinary ones.
+- **Revocation (three independent paths):**
+  1. *IdP-driven:* OIDC Back-Channel Logout at `POST /auth/backchannel-logout`. When a user
+     is signed out in Keycloak (for example by an admin after a group change), Keycloak
+     POSTs a signed logout token. It is verified for signature, iss, aud, iat freshness,
+     the back-channel-logout event, and absence of a nonce. A token naming a subject revokes
+     **every** session of that subject here, not only the matching `sid`, because Keycloak
+     was observed sending a single token for a multi-session user. Responses use
+     `Connection: close`, because Keycloak does not retry and a stale pooled keep-alive
+     connection was observed silently dropping a revocation.
+  2. *Break-glass CLI:* `kubechaos-api sessions revoke --email|--subject|--role|--all --yes`.
+     It needs only the database, so it works with the IdP or web tier down.
+  3. *Expiry:* the short high-privilege lifetimes bound exposure if both paths above are missed.
+- **Log hygiene.** Every log line passes through `internal/logging`. It always redacts
+  sensitive attribute keys and scrubs JWTs, OAuth parameters (`code`, `state`, tokens,
+  secrets), bearer credentials, session cookies and connection-string passwords from all
+  strings and error texts. Token-endpoint failures are logged as status plus OAuth error code
+  only, never the response body. The OIDC e2e test scans the captured logs for every real
+  code, state, cookie, CSRF token, client secret and password it saw.
 - **Not yet implemented:** step-up (`acr_values`/`max_age=0`) and elevation grants. These
   arrive with experiment submission, the first operation that requires them. The session
   already records `acr` and `auth_time`. Login/logout audit events arrive with the audit

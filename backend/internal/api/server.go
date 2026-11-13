@@ -63,6 +63,8 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/auth/login", d.Auth.Login)
 	r.Get("/auth/callback", d.Auth.Callback)
 	r.With(d.Auth.RequireSession, d.Auth.RequireCSRF).Post("/auth/logout", d.Auth.Logout)
+	// IdP → API (server-to-server): authenticated by the signed logout token alone.
+	r.Post("/auth/backchannel-logout", d.Auth.BackchannelLogout)
 
 	// Application API: deny by default. Every route requires a session; state-changing
 	// methods additionally require a same-origin request carrying the CSRF token. Unknown

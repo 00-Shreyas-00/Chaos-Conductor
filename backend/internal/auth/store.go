@@ -30,13 +30,15 @@ type Identity struct {
 // Session is a server-side session. The browser holds only the random token; the store
 // holds only its hash.
 type Session struct {
-	TokenHash  []byte
-	IdentityID string
-	Roles      []Role
-	ACR        string
-	AuthTime   *time.Time
-	CSRFToken  string
-	ExpiresAt  time.Time
+	TokenHash   []byte
+	IdentityID  string
+	Roles       []Role
+	ACR         string
+	AuthTime    *time.Time
+	CSRFToken   string
+	IdPSID      string        // IdP session ID ("sid" claim), for back-channel logout
+	IdleTimeout time.Duration // per-session; shorter for high-privilege roles
+	ExpiresAt   time.Time
 }
 
 // Store persists login requests, identities and sessions.
@@ -46,9 +48,13 @@ type Store interface {
 	ConsumeLoginRequest(ctx context.Context, stateHash []byte) (LoginRequest, error)
 	UpsertIdentity(ctx context.Context, id Identity) (string, error)
 	CreateSession(ctx context.Context, s Session) error
-	// LookupSession returns a session that is neither expired nor idle longer than idle.
-	LookupSession(ctx context.Context, tokenHash []byte, idle time.Duration) (Session, Identity, error)
+	// LookupSession returns a session that is neither expired nor idle beyond its own timeout.
+	LookupSession(ctx context.Context, tokenHash []byte) (Session, Identity, error)
 	TouchSession(ctx context.Context, tokenHash []byte) error
 	DeleteSession(ctx context.Context, tokenHash []byte) error
+	// DeleteSessionsBySID revokes sessions created from IdP session sid (back-channel logout).
+	DeleteSessionsBySID(ctx context.Context, issuer, sid string) (int64, error)
+	// DeleteSessionsBySubject revokes every session of an identity.
+	DeleteSessionsBySubject(ctx context.Context, issuer, subject string) (int64, error)
 	DeleteExpired(ctx context.Context) error
 }

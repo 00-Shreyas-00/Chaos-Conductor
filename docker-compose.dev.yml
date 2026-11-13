@@ -43,6 +43,12 @@ services:
       # Consumed by ${...} placeholders in deploy/keycloak/import/kubechaos-realm.json.
       KUBECHAOS_OIDC_CLIENT_SECRET: ${KUBECHAOS_OIDC_CLIENT_SECRET:?run make env}
       KEYCLOAK_DEV_USER_PASSWORD: ${KEYCLOAK_DEV_USER_PASSWORD:?run make env}
+    # Lets Keycloak reach the API (running in the devcontainer, outside this compose network)
+    # for OIDC Back-Channel Logout. A private name on purpose, NOT host.docker.internal:
+    # Docker Desktop's DNS also answers that name (with the Windows host's IPv6 address),
+    # which made the back-channel target nondeterministic.
+    extra_hosts:
+      - "kubechaos-api.internal:host-gateway"
     ports:
       - "127.0.0.1:8180:8180"
     volumes:

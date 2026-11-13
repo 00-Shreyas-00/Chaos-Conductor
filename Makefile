@@ -68,7 +68,8 @@ BACKEND_DEV_ENV = set -a; . ./.env; set +a; export KUBECHAOS_ENV=development; \
 	export KUBECHAOS_MIGRATE_DATABASE_URL="$(call dsn,kubechaos_migrator,KUBECHAOS_MIGRATOR_PASSWORD)"; \
 	export KUBECHAOS_PUBLIC_URL="$${KUBECHAOS_PUBLIC_URL:-http://localhost:4200}"; \
 	export KUBECHAOS_OIDC_ISSUER="http://localhost:8180/realms/kubechaos"; \
-	export KUBECHAOS_OIDC_CLIENT_ID="kubechaos-api"
+	export KUBECHAOS_OIDC_CLIENT_ID="kubechaos-api"; \
+	export KUBECHAOS_HTTP_ADDR="$${KUBECHAOS_HTTP_ADDR:-0.0.0.0:8080}"
 
 .PHONY: test
 test: ## Run Go unit tests
@@ -91,8 +92,12 @@ test-e2e: env ## OIDC end-to-end tests against dev Keycloak + Postgres (needs ma
 migrate: env ## Apply database migrations (migrator role)
 	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api migrate up
 
+.PHONY: sessions-revoke
+sessions-revoke: env ## Break-glass: revoke sessions, e.g. make sessions-revoke ARGS="--role admin"
+	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api sessions revoke $(ARGS)
+
 .PHONY: api
-api: env ## Run the control plane API on 127.0.0.1:8080 (app role)
+api: env ## Run the control plane API on :8080 inside the devcontainer (reachable by Keycloak for back-channel logout)
 	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api serve
 
 ## ---------- frontend ----------

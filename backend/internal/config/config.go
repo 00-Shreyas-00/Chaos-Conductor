@@ -130,6 +130,28 @@ func LoadServer(getenv func(string) string) (Server, error) {
 	return c, errors.Join(errs...)
 }
 
+// Admin is the configuration for break-glass admin commands (e.g. `sessions revoke`).
+// They need only the database, so they keep working when the IdP or web tier is down.
+type Admin struct {
+	Environment Environment
+	DatabaseURL string // app role; never logged
+	LogLevel    slog.Level
+}
+
+// LoadAdmin reads admin-command configuration.
+func LoadAdmin(getenv func(string) string) (Admin, error) {
+	var errs []error
+	env, err := parseEnvironment(getenv("KUBECHAOS_ENV"))
+	errs = append(errs, err)
+	c := Admin{Environment: env, DatabaseURL: getenv("KUBECHAOS_DATABASE_URL")}
+	if c.DatabaseURL == "" {
+		errs = append(errs, errors.New("KUBECHAOS_DATABASE_URL is required"))
+	}
+	c.LogLevel, err = parseLevel(getenv("KUBECHAOS_LOG_LEVEL"))
+	errs = append(errs, err)
+	return c, errors.Join(errs...)
+}
+
 // LoadMigrate reads migration configuration.
 func LoadMigrate(getenv func(string) string) (Migrate, error) {
 	var errs []error

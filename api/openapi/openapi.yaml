@@ -100,6 +100,39 @@ paths:
           $ref: "#/components/responses/Problem"
         "403":
           $ref: "#/components/responses/Problem"
+  /auth/backchannel-logout:
+    post:
+      operationId: backchannelLogout
+      summary: OIDC Back-Channel Logout (identity provider → API)
+      description: |
+        Called server-to-server by the identity provider when an IdP session ends (logout,
+        admin sign-out, revocation). Authenticated solely by the signed `logout_token`
+        (signature, iss, aud, iat freshness, back-channel-logout event, no nonce).
+        Deletes the application sessions created from that IdP session (`sid`), or every
+        session of the subject when no `sid` is present.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [logout_token]
+              properties:
+                logout_token: { type: string, maxLength: 16384 }
+      responses:
+        "200":
+          description: Sessions revoked (possibly none)
+        "400":
+          description: Invalid request or logout token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+        "500":
+          $ref: "#/components/responses/Problem"
   /api/v1/me:
     get:
       operationId: getCurrentUser

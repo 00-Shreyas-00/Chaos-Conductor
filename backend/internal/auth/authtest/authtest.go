@@ -4,6 +4,7 @@ package authtest
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"net/url"
 	"sync"
 	"time"
@@ -82,14 +83,14 @@ func (m *MemStore) CreateSession(_ context.Context, s auth.Session) error {
 	return nil
 }
 
-func (m *MemStore) LookupSession(_ context.Context, h []byte, idle time.Duration) (auth.Session, auth.Identity, error) {
+func (m *MemStore) LookupSession(_ context.Context, h []byte) (auth.Session, auth.Identity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Err != nil {
 		return auth.Session{}, auth.Identity{}, m.Err
 	}
 	s, ok := m.Sessions[k(h)]
-	if !ok || !s.ExpiresAt.After(time.Now()) || time.Since(m.LastSeen[k(h)]) > idle {
+	if !ok || !s.ExpiresAt.After(time.Now()) || time.Since(m.LastSeen[k(h)]) > s.IdleTimeout {
 		return auth.Session{}, auth.Identity{}, auth.ErrNotFound
 	}
 	for _, id := range m.Identities {
@@ -117,6 +118,32 @@ func (m *MemStore) DeleteSession(_ context.Context, h []byte) error {
 	return nil
 }
 
+func (m *MemStore) deleteWhere(match func(auth.Session, auth.Identity) bool) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return 0, m.Err
+	}
+	var n int64
+	for key, s := range m.Sessions {
+		for _, id := range m.Identities {
+			if id.ID == s.IdentityID && match(s, id) {
+				delete(m.Sessions, key)
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+func (m *MemStore) DeleteSessionsBySID(_ context.Context, issuer, sid string) (int64, error) {
+	return m.deleteWhere(func(s auth.Session, id auth.Identity) bool { return id.Issuer == issuer && s.IdPSID == sid })
+}
+
+func (m *MemStore) DeleteSessionsBySubject(_ context.Context, issuer, subject string) (int64, error) {
+	return m.deleteWhere(func(_ auth.Session, id auth.Identity) bool { return id.Issuer == issuer && id.Subject == subject })
+}
+
 func (m *MemStore) DeleteExpired(context.Context) error { return m.Err }
 
 // FakeIdP is a programmable auth.IdP.
@@ -131,6 +158,7 @@ type FakeIdP struct {
 	LastNonce    string
 	LastVerifier string
 	LastCode     string
+	LogoutTokens map[string]auth.LogoutToken
 }
 
 func (f *FakeIdP) AuthCodeURL(_ context.Context, state, nonce, verifier string) (string, error) {
@@ -158,6 +186,16 @@ func (f *FakeIdP) Exchange(_ context.Context, code, verifier string) (auth.Claim
 		c.Nonce = "pkce-verifier-mismatch" // makes the flow fail like a real IdP would
 	}
 	return c, nil
+}
+
+// LogoutTokens maps raw logout-token strings to the verified result; anything else is invalid.
+func (f *FakeIdP) VerifyLogoutToken(_ context.Context, raw string) (auth.LogoutToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if lt, ok := f.LogoutTokens[raw]; ok {
+		return lt, nil
+	}
+	return auth.LogoutToken{}, errors.New("invalid logout token")
 }
 
 func (f *FakeIdP) EndSessionURL(_ context.Context, redirect string) (string, error) {

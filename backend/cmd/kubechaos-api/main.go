@@ -3,11 +3,14 @@
 //	kubechaos-api serve            run the HTTP API (app DB role)
 //	kubechaos-api migrate up       apply database migrations (migrator DB role)
 //	kubechaos-api migrate status   show migration state
+//	kubechaos-api sessions revoke (--email E | --subject S | --role R | --all --yes)
+//	                               break-glass session revocation (app DB role; no IdP needed)
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	"github.com/kubechaos/kubechaos/backend/internal/api"
 	"github.com/kubechaos/kubechaos/backend/internal/auth"
 	"github.com/kubechaos/kubechaos/backend/internal/config"
+	"github.com/kubechaos/kubechaos/backend/internal/logging"
 	"github.com/kubechaos/kubechaos/backend/internal/repository"
 )
 
@@ -28,9 +32,9 @@ var version = "dev"
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
-	bootLogger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	bootLogger := logging.New(os.Stderr, slog.LevelInfo)
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: kubechaos-api serve | migrate up | migrate status")
+		fmt.Fprintln(os.Stderr, "usage: kubechaos-api serve | migrate up | migrate status | sessions revoke ...")
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -42,6 +46,12 @@ func run(args []string) int {
 		err = serve(ctx)
 	case args[0] == "migrate" && len(args) == 2 && (args[1] == "up" || args[1] == "status"):
 		err = migrate(ctx, args[1])
+	case args[0] == "sessions" && len(args) >= 2 && args[1] == "revoke":
+		var usage bool
+		usage, err = revokeSessions(ctx, args[2:])
+		if usage {
+			return 2
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", args)
 		return 2
@@ -54,7 +64,8 @@ func run(args []string) int {
 }
 
 func newLogger(level slog.Level) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})).
+	// All logs pass through the redaction layer (no tokens, codes, secrets or cookies).
+	return logging.New(os.Stdout, level).
 		With(slog.String("service", "kubechaos-api"), slog.String("version", version))
 }
 
@@ -86,6 +97,11 @@ func serve(ctx context.Context) error {
 		SessionIdle: 30 * time.Minute,
 		SessionMax:  8 * time.Hour,
 		LoginTTL:    10 * time.Minute,
+		// admin/approver: much shorter sessions; also revocable via back-channel logout
+		// and `kubechaos-api sessions revoke`.
+		HighPrivilegeRoles:  auth.DefaultHighPrivilegeRoles,
+		HighPrivSessionIdle: 10 * time.Minute,
+		HighPrivSessionMax:  1 * time.Hour,
 	}, sessions, auth.NewOIDC(auth.OIDCConfig{
 		Issuer:       cfg.OIDCIssuer,
 		ClientID:     cfg.OIDCClientID,
@@ -140,6 +156,66 @@ func purgeExpiredSessions(ctx context.Context, store auth.Store, logger *slog.Lo
 			}
 		}
 	}
+}
+
+// revokeSessions implements `sessions revoke`. It returns usage=true for invalid arguments.
+func revokeSessions(ctx context.Context, args []string) (usage bool, err error) {
+	fs := flag.NewFlagSet("sessions revoke", flag.ContinueOnError)
+	email := fs.String("email", "", "revoke all sessions of the identity with this e-mail")
+	subject := fs.String("subject", "", "revoke all sessions of this IdP subject")
+	role := fs.String("role", "", "revoke all sessions holding this role (e.g. admin)")
+	all := fs.Bool("all", false, "revoke every session (requires --yes)")
+	yes := fs.Bool("yes", false, "confirm --all")
+	if err := fs.Parse(args); err != nil {
+		return true, nil
+	}
+	selected := 0
+	for _, set := range []bool{*email != "", *subject != "", *role != "", *all} {
+		if set {
+			selected++
+		}
+	}
+	if selected != 1 || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "sessions revoke: specify exactly one of --email, --subject, --role, --all")
+		return true, nil
+	}
+	if *all && !*yes {
+		fmt.Fprintln(os.Stderr, "sessions revoke: --all revokes every session; add --yes to confirm")
+		return true, nil
+	}
+	if *role != "" && len(auth.RolesFromGroups([]string{auth.GroupPrefix + *role})) != 1 {
+		fmt.Fprintf(os.Stderr, "sessions revoke: unknown role %q\n", *role)
+		return true, nil
+	}
+
+	cfg, err := config.LoadAdmin(os.Getenv)
+	if err != nil {
+		return false, fmt.Errorf("config: %w", err)
+	}
+	logger := newLogger(cfg.LogLevel)
+	pool, err := repository.Connect(ctx, cfg.DatabaseURL, repository.PoolOptions{
+		MaxConns: 1, ApplicationName: "kubechaos-admin", RequireTLS: cfg.Environment != config.EnvDevelopment,
+	})
+	if err != nil {
+		return false, err
+	}
+	defer pool.Close()
+
+	n, err := repository.NewSessionStore(pool).RevokeSessions(ctx, repository.RevokeSelector{
+		Email: *email, Subject: *subject, Role: *role, All: *all,
+	})
+	if err != nil {
+		return false, fmt.Errorf("revoke sessions: %w", err)
+	}
+	selector := map[string]string{"email": *email, "subject": *subject, "role": *role}
+	if *all {
+		selector = map[string]string{"all": "true"}
+	}
+	// TODO(step 14): emit audit event auth.session.revoked (actor: OS user on control node).
+	logger.Info("sessions revoked", slog.Any("selector", selector), slog.Int64("sessions_revoked", n),
+		slog.String("os_user", os.Getenv("USER")))
+	fmt.Printf("revoked %d session(s)\n", n)
+	return false, nil
 }
 
 func migrate(ctx context.Context, sub string) error {

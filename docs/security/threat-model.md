@@ -75,8 +75,14 @@ Residual risk is stated honestly where mitigation is partial.
   **Destructive submissions above a risk threshold require step-up with `max_age=0`**, so
   a stolen cookie alone cannot launch high-risk experiments. Elevation grants are
   single-use, bound to session + experiment + spec hash, and expire after 5 min.
-  Server-side revocation ("log out all sessions"). Optional binding of the session to a
-  coarse client fingerprint as an anomaly signal only, not as auth.
+  Server-side revocation through three paths: IdP back-channel logout (revokes all of the
+  subject's sessions), the break-glass `sessions revoke` CLI, and expiry. `admin`/`approver`
+  sessions last 10 min idle / 1 h absolute. Optional binding of the session to a coarse
+  client fingerprint as an anomaly signal only, not as auth.
+- **Known limit:** roles are fixed at login. A group removal in Keycloak takes effect
+  at the next login, or immediately if the admin also signs the user out in Keycloak (which
+  triggers back-channel logout). Back-channel delivery is best-effort (Keycloak does not
+  retry), which is why the CLI path and short high-privilege lifetimes exist.
 - **Residual:** low-risk experiments within policy can still be run by a session thief.
   Policy limits bound the damage, and audit records it.
 
@@ -174,7 +180,10 @@ This is the threat the architecture is built around.
 - **Targets:** OIDC client secret, DB password, control plane SA token, operator SA
   token, break-glass kubeconfig, mTLS keys.
 - **Mitigations:** secrets come from K8s Secrets / an external secret manager and are
-  never logged (structured logger with a redaction allow-list). Projected,
+  never logged. Every log line passes through a redaction layer covering sensitive keys,
+  JWTs, OAuth parameters, bearer credentials, session cookies and DSN passwords, including
+  inside third-party error strings. Token-endpoint errors are reduced to status plus error
+  code. An e2e test scans logs for every real secret value it handled. Projected,
   audience-bound, short-lived SA tokens. Short-lived mTLS certs. The break-glass kubeconfig
   is only on the control node, ideally using a short-lived credential (OIDC to the API
   server or a cert valid for hours), with its use recorded in K8s audit logs. No
@@ -195,7 +204,9 @@ This is the threat the architecture is built around.
   access, operator SA → cluster-admin via RBAC verbs, ephemeral containers to read
   secrets, abuse of the webhook.
 - **Mitigations:** role bindings are only editable by `admin`, audited, and admins cannot
-  edit their own bindings (four-eyes for admin grants). Roles derive from IdP groups
+  edit their own bindings (four-eyes for admin grants). A revoked high-privilege grant stops
+  working within at most 1 h without any action, or immediately via Keycloak sign-out
+  (back-channel logout) or `kubechaosctl`/`kubechaos-api sessions revoke --role admin`. Roles derive from IdP groups
   managed outside the app. Neither SA has `escalate`, `bind`, `impersonate`, RBAC write,
   `pods/exec`, or secrets. Any future ephemeral-container primitive must be constrained
   by an admission policy pinning the image digest and forbidding privileged settings.

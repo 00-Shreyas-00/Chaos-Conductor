@@ -67,29 +67,33 @@ func (s *SessionStore) CreateSession(ctx context.Context, sess auth.Session) err
 		roles[i] = string(r)
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO app.sessions (token_hash, identity_id, roles, acr, auth_time, csrf_token, expires_at)
-		VALUES ($1, $2::uuid, $3, NULLIF($4, ''), $5, $6, $7)`,
-		sess.TokenHash, sess.IdentityID, roles, sess.ACR, sess.AuthTime, sess.CSRFToken, sess.ExpiresAt)
+		INSERT INTO app.sessions (token_hash, identity_id, roles, acr, auth_time, csrf_token, idp_sid, idle_timeout_seconds, expires_at)
+		VALUES ($1, $2::uuid, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9)`,
+		sess.TokenHash, sess.IdentityID, roles, sess.ACR, sess.AuthTime, sess.CSRFToken,
+		sess.IdPSID, int(sess.IdleTimeout.Seconds()), sess.ExpiresAt)
 	return err
 }
 
-func (s *SessionStore) LookupSession(ctx context.Context, tokenHash []byte, idle time.Duration) (auth.Session, auth.Identity, error) {
+func (s *SessionStore) LookupSession(ctx context.Context, tokenHash []byte) (auth.Session, auth.Identity, error) {
 	var (
-		sess  = auth.Session{TokenHash: tokenHash}
-		ident auth.Identity
-		roles []string
+		sess    = auth.Session{TokenHash: tokenHash}
+		ident   auth.Identity
+		roles   []string
+		sid     string
+		idleSec int
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT s.identity_id::text, s.roles, coalesce(s.acr, ''), s.auth_time, s.csrf_token, s.expires_at,
+		       coalesce(s.idp_sid, ''), s.idle_timeout_seconds,
 		       i.issuer, i.subject, coalesce(i.display_name, ''), coalesce(i.email, '')
 		FROM app.sessions s
 		JOIN app.identities i ON i.id = s.identity_id
 		WHERE s.token_hash = $1
 		  AND s.expires_at > now()
-		  AND s.last_seen_at > now() - make_interval(secs => $2)`,
-		tokenHash, idle.Seconds()).
+		  AND s.last_seen_at > now() - make_interval(secs => s.idle_timeout_seconds)`,
+		tokenHash).
 		Scan(&sess.IdentityID, &roles, &sess.ACR, &sess.AuthTime, &sess.CSRFToken, &sess.ExpiresAt,
-			&ident.Issuer, &ident.Subject, &ident.DisplayName, &ident.Email)
+			&sid, &idleSec, &ident.Issuer, &ident.Subject, &ident.DisplayName, &ident.Email)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sess, ident, auth.ErrNotFound
 	}
@@ -97,6 +101,8 @@ func (s *SessionStore) LookupSession(ctx context.Context, tokenHash []byte, idle
 		return sess, ident, fmt.Errorf("lookup session: %w", err)
 	}
 	ident.ID = sess.IdentityID
+	sess.IdPSID = sid
+	sess.IdleTimeout = time.Duration(idleSec) * time.Second
 	sess.Roles = make([]auth.Role, len(roles))
 	for i, r := range roles {
 		sess.Roles[i] = auth.Role(r)
@@ -115,6 +121,51 @@ func (s *SessionStore) TouchSession(ctx context.Context, tokenHash []byte) error
 func (s *SessionStore) DeleteSession(ctx context.Context, tokenHash []byte) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM app.sessions WHERE token_hash = $1`, tokenHash)
 	return err
+}
+
+func (s *SessionStore) DeleteSessionsBySID(ctx context.Context, issuer, sid string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM app.sessions s USING app.identities i
+		WHERE s.identity_id = i.id AND i.issuer = $1 AND s.idp_sid = $2`, issuer, sid)
+	return tag.RowsAffected(), err
+}
+
+func (s *SessionStore) DeleteSessionsBySubject(ctx context.Context, issuer, subject string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM app.sessions s USING app.identities i
+		WHERE s.identity_id = i.id AND i.issuer = $1 AND i.subject = $2`, issuer, subject)
+	return tag.RowsAffected(), err
+}
+
+// RevokeSelector chooses which sessions the break-glass CLI revokes. Exactly one field is set.
+type RevokeSelector struct {
+	Subject string // IdP subject (any issuer)
+	Email   string // identity e-mail (case-insensitive)
+	Role    string // every session holding this role
+	All     bool
+}
+
+// RevokeSessions deletes sessions for the break-glass CLI path (`kubechaos-api sessions
+// revoke`), which works without the web UI or the IdP.
+func (s *SessionStore) RevokeSessions(ctx context.Context, sel RevokeSelector) (int64, error) {
+	var (
+		sql  string
+		args []any
+	)
+	switch {
+	case sel.All:
+		sql = `DELETE FROM app.sessions`
+	case sel.Subject != "":
+		sql, args = `DELETE FROM app.sessions s USING app.identities i WHERE s.identity_id = i.id AND i.subject = $1`, []any{sel.Subject}
+	case sel.Email != "":
+		sql, args = `DELETE FROM app.sessions s USING app.identities i WHERE s.identity_id = i.id AND lower(i.email) = lower($1)`, []any{sel.Email}
+	case sel.Role != "":
+		sql, args = `DELETE FROM app.sessions WHERE $1 = ANY(roles)`, []any{sel.Role}
+	default:
+		return 0, errors.New("revoke: no selector")
+	}
+	tag, err := s.pool.Exec(ctx, sql, args...)
+	return tag.RowsAffected(), err
 }
 
 func (s *SessionStore) DeleteExpired(ctx context.Context) error {

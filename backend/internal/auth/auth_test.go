@@ -24,12 +24,168 @@ func newService(t *testing.T) (*auth.Service, *authtest.MemStore, *authtest.Fake
 	store := authtest.NewMemStore()
 	idp := &authtest.FakeIdP{Claims: auth.Claims{
 		Issuer: "https://idp.test/realms/kubechaos", Subject: "sub-alice", Name: "Alice",
-		Groups: []string{"kubechaos-experimenter", "unrelated-group"}, ACR: "1",
+		Groups: []string{"kubechaos-experimenter", "unrelated-group"}, ACR: "1", SID: "kc-sid-1",
 	}}
-	svc := auth.NewService(auth.Config{
-		PublicURL: u, SessionIdle: 30 * time.Minute, SessionMax: 8 * time.Hour, LoginTTL: 10 * time.Minute,
-	}, store, idp, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	svc := auth.NewService(testConfig(u), store, idp, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	return svc, store, idp
+}
+
+func testConfig(u *url.URL) auth.Config {
+	return auth.Config{
+		PublicURL: u, SessionIdle: 30 * time.Minute, SessionMax: 8 * time.Hour, LoginTTL: 10 * time.Minute,
+		HighPrivilegeRoles: auth.DefaultHighPrivilegeRoles, HighPrivSessionIdle: 10 * time.Minute, HighPrivSessionMax: time.Hour,
+	}
+}
+
+func onlySession(t *testing.T, store *authtest.MemStore) auth.Session {
+	t.Helper()
+	if len(store.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(store.Sessions))
+	}
+	for _, s := range store.Sessions {
+		return s
+	}
+	return auth.Session{}
+}
+
+func TestHighPrivilegeSessionsAreShorter(t *testing.T) {
+	for _, c := range []struct {
+		groups       []string
+		idle         time.Duration
+		cookieMaxAge int
+	}{
+		{[]string{"kubechaos-experimenter"}, 30 * time.Minute, 8 * 3600},
+		{[]string{"kubechaos-viewer", "kubechaos-auditor"}, 30 * time.Minute, 8 * 3600},
+		{[]string{"kubechaos-admin"}, 10 * time.Minute, 3600},
+		{[]string{"kubechaos-experimenter", "kubechaos-approver"}, 10 * time.Minute, 3600}, // any high role wins
+	} {
+		svc, store, idp := newService(t)
+		idp.Claims.Groups = c.groups
+		cookie := sessionCookie(login(t, svc, idp, "/"))
+		s := onlySession(t, store)
+		if s.IdleTimeout != c.idle || cookie.MaxAge != c.cookieMaxAge ||
+			time.Until(s.ExpiresAt) > time.Duration(c.cookieMaxAge)*time.Second {
+			t.Errorf("groups %v: idle=%v maxAge=%d expiresIn=%v", c.groups, s.IdleTimeout, cookie.MaxAge, time.Until(s.ExpiresAt))
+		}
+		if s.IdPSID != "kc-sid-1" {
+			t.Errorf("sid not recorded: %q", s.IdPSID)
+		}
+	}
+}
+
+func TestHighPrivilegeLimitsCanOnlyBeStricter(t *testing.T) {
+	u, _ := url.Parse(origin)
+	cfg := testConfig(u)
+	cfg.HighPrivSessionIdle, cfg.HighPrivSessionMax = 24*time.Hour, 0 // misconfigured: longer / unset
+	store := authtest.NewMemStore()
+	idp := &authtest.FakeIdP{Claims: auth.Claims{Issuer: "i", Subject: "carol", Groups: []string{"kubechaos-admin"}}}
+	svc := auth.NewService(cfg, store, idp, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	login(t, svc, idp, "/")
+	if s := onlySession(t, store); s.IdleTimeout != 30*time.Minute || time.Until(s.ExpiresAt) > 8*time.Hour {
+		t.Fatalf("high-privilege limits must be clamped to ordinary limits: %+v", s)
+	}
+}
+
+func backchannel(svc *auth.Service, body, contentType string) int {
+	req := httptest.NewRequest("POST", "/auth/backchannel-logout", strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	svc.BackchannelLogout(rec, req)
+	return rec.Code
+}
+
+func TestBackchannelLogout(t *testing.T) {
+	const form = "application/x-www-form-urlencoded"
+	issuer := "https://idp.test/realms/kubechaos"
+
+	t.Run("sub+sid revokes every session of the subject, not only that sid", func(t *testing.T) {
+		svc, store, idp := newService(t)
+		login(t, svc, idp, "/")
+		idp.Claims.SID = "kc-sid-2"
+		login(t, svc, idp, "/") // second device, different IdP session
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: issuer, Subject: "sub-alice", SID: "kc-sid-1"}}
+		if code := backchannel(svc, "logout_token=tok", form); code != http.StatusOK || len(store.Sessions) != 0 {
+			t.Fatalf("code=%d sessions left=%d", code, len(store.Sessions))
+		}
+	})
+
+	t.Run("sid-only token revokes only that IdP session", func(t *testing.T) {
+		svc, store, idp := newService(t)
+		login(t, svc, idp, "/")
+		idp.Claims.SID = "kc-sid-2"
+		login(t, svc, idp, "/")
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: issuer, SID: "kc-sid-1"}}
+		if code := backchannel(svc, "logout_token=tok", form); code != http.StatusOK {
+			t.Fatalf("code=%d", code)
+		}
+		if s := onlySession(t, store); s.IdPSID != "kc-sid-2" {
+			t.Fatalf("wrong session revoked: %+v", s)
+		}
+	})
+
+	t.Run("by subject revokes every session of the user", func(t *testing.T) {
+		svc, store, idp := newService(t)
+		login(t, svc, idp, "/")
+		login(t, svc, idp, "/")
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: issuer, Subject: "sub-alice"}}
+		if code := backchannel(svc, "logout_token=tok", form); code != http.StatusOK || len(store.Sessions) != 0 {
+			t.Fatalf("code=%d sessions=%d", code, len(store.Sessions))
+		}
+	})
+
+	t.Run("other issuer's token revokes nothing", func(t *testing.T) {
+		svc, store, idp := newService(t)
+		login(t, svc, idp, "/")
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: "https://other-idp", Subject: "sub-alice", SID: "kc-sid-1"}}
+		if code := backchannel(svc, "logout_token=tok", form); code != http.StatusOK || len(store.Sessions) != 1 {
+			t.Fatalf("code=%d sessions=%d", code, len(store.Sessions))
+		}
+	})
+
+	t.Run("rejects invalid requests and leaves sessions intact", func(t *testing.T) {
+		svc, store, idp := newService(t)
+		login(t, svc, idp, "/")
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: issuer, SID: "kc-sid-1"}}
+		for name, c := range map[string]struct{ body, ct string }{
+			"forged token":      {"logout_token=forged", form},
+			"missing token":     {"other=1", form},
+			"json content type": {`{"logout_token":"tok"}`, "application/json"},
+			"no content type":   {"logout_token=tok", ""},
+			"oversized token":   {"logout_token=" + strings.Repeat("a", 17<<10), form},
+		} {
+			if code := backchannel(svc, c.body, c.ct); code != http.StatusBadRequest {
+				t.Errorf("%s: code=%d want 400", name, code)
+			}
+		}
+		if len(store.Sessions) != 1 {
+			t.Fatal("rejected requests must not revoke sessions")
+		}
+	})
+
+	t.Run("responses close the connection (no stale IdP keep-alives)", func(t *testing.T) {
+		svc, _, idp := newService(t)
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: issuer, Subject: "s"}}
+		for _, body := range []string{"logout_token=tok", "logout_token=forged"} {
+			req := httptest.NewRequest("POST", "/auth/backchannel-logout", strings.NewReader(body))
+			req.Header.Set("Content-Type", form)
+			rec := httptest.NewRecorder()
+			svc.BackchannelLogout(rec, req)
+			if rec.Header().Get("Connection") != "close" || rec.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("%s: headers %v", body, rec.Header())
+			}
+		}
+	})
+
+	t.Run("store failure is an error, not success", func(t *testing.T) {
+		svc, store, idp := newService(t)
+		idp.LogoutTokens = map[string]auth.LogoutToken{"tok": {Issuer: issuer, SID: "x"}}
+		store.Err = errors.New("db down")
+		if code := backchannel(svc, "logout_token=tok", form); code != http.StatusInternalServerError {
+			t.Fatalf("code=%d", code)
+		}
+	})
 }
 
 // login runs Login + Callback and returns the callback response.

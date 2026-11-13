@@ -44,6 +44,7 @@ make migrate    # apply DB migrations (migrator role)
 make api        # control plane on 127.0.0.1:8080 (app role; refuses over-privileged roles)
 make fe         # SPA on 127.0.0.1:4200, proxies /api to the API
 make test test-integration test-e2e fe-test fe-build
+make sessions-revoke ARGS="--role admin"   # break-glass session revocation
 make status
 make dev-down   # stop (keeps data)
 make dev-reset  # destroy data volumes and cluster
