@@ -37,6 +37,12 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?run make env}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run make env}
       KC_HEALTH_ENABLED: "true"
+      # Fixed issuer so tokens carry iss=http://localhost:8180/realms/kubechaos regardless of
+      # whether the browser or the API (inside the devcontainer) is talking to Keycloak.
+      KC_HOSTNAME: http://localhost:8180
+      # Consumed by ${...} placeholders in deploy/keycloak/import/kubechaos-realm.json.
+      KUBECHAOS_OIDC_CLIENT_SECRET: ${KUBECHAOS_OIDC_CLIENT_SECRET:?run make env}
+      KEYCLOAK_DEV_USER_PASSWORD: ${KEYCLOAK_DEV_USER_PASSWORD:?run make env}
     ports:
       - "127.0.0.1:8180:8180"
     volumes:

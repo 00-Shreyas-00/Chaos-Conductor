@@ -42,11 +42,69 @@ paths:
               schema: { $ref: "#/components/schemas/Status" }
         "503":
           $ref: "#/components/responses/Problem"
+  /auth/login:
+    get:
+      operationId: startLogin
+      summary: Start OIDC login (authorization code + PKCE S256)
+      description: |
+        Redirects the browser to the identity provider. `returnTo` must be a relative
+        application path; anything else is replaced with `/` (no open redirects).
+      security: []
+      parameters:
+        - name: returnTo
+          in: query
+          required: false
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "302":
+          description: Redirect to the identity provider
+        "503":
+          $ref: "#/components/responses/Problem"
+  /auth/callback:
+    get:
+      operationId: completeLogin
+      summary: OIDC redirect URI
+      description: |
+        Validates the single-use state, exchanges the code (with PKCE verifier), verifies the
+        ID token and nonce, creates a server-side session and sets the `__Host-kc_session`
+        cookie (HttpOnly, Secure, SameSite=Strict). Any failure redirects to `/?loginError=1`.
+      security: []
+      parameters:
+        - { name: state, in: query, required: true, schema: { type: string } }
+        - { name: code, in: query, required: false, schema: { type: string } }
+        - { name: error, in: query, required: false, schema: { type: string } }
+      responses:
+        "302":
+          description: Redirect to the requested application path, or to `/?loginError=1`
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: End the session
+      description: |
+        Requires the session cookie, `Origin` equal to the public origin and the
+        `X-KubeChaos-CSRF` header. Returns the IdP end-session URL for the browser to visit.
+      parameters:
+        - $ref: "#/components/parameters/CSRFHeader"
+      responses:
+        "200":
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [logoutUrl]
+                properties:
+                  logoutUrl: { type: string }
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
   /api/v1/me:
     get:
       operationId: getCurrentUser
       summary: Current user identity, roles and authentication level
-      description: Returns 401 until OIDC authentication is implemented.
+      description: Also returns the session's CSRF token, which the SPA must send in `X-KubeChaos-CSRF` on state-changing requests.
       responses:
         "200":
           description: Current user
@@ -56,6 +114,13 @@ paths:
         "401":
           $ref: "#/components/responses/Problem"
 components:
+  parameters:
+    CSRFHeader:
+      name: X-KubeChaos-CSRF
+      in: header
+      required: true
+      description: Session CSRF token from GET /api/v1/me.
+      schema: { type: string, minLength: 43, maxLength: 43 }
   securitySchemes:
     sessionCookie:
       type: apiKey
@@ -88,7 +153,7 @@ components:
     CurrentUser:
       type: object
       additionalProperties: false
-      required: [subject, issuer, roles, authLevel]
+      required: [subject, issuer, roles, authLevel, csrfToken]
       properties:
         subject: { type: string }
         issuer: { type: string }
@@ -101,5 +166,8 @@ components:
         authLevel:
           type: string
           description: Keycloak ACR level of the current session (e.g. "1" password, "2" MFA step-up).
+        csrfToken:
+          type: string
+          description: Send as X-KubeChaos-CSRF on POST/PUT/PATCH/DELETE.
 security:
   - sessionCookie: []

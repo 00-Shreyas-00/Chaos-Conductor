@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,33 @@ type Server struct {
 	MaxBodyBytes    int64
 	ShutdownTimeout time.Duration
 	LogLevel        slog.Level
+
+	// PublicURL is the origin browsers use to reach the SPA and API (same origin).
+	PublicURL *url.URL
+	// OIDC (Keycloak) confidential client. The secret is never logged.
+	OIDCIssuer       string
+	OIDCClientID     string
+	OIDCClientSecret string
+}
+
+// validURL enforces an absolute http(s) URL without credentials, query or fragment.
+// Plain http is accepted only in development and only for loopback hosts.
+func validURL(name, raw string, env Environment) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%s must be an absolute URL without credentials, query or fragment", name)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		h := u.Hostname()
+		if env != EnvDevelopment || (h != "localhost" && h != "127.0.0.1" && h != "::1") {
+			return nil, fmt.Errorf("%s must use https (http only allowed for loopback in development)", name)
+		}
+	default:
+		return nil, fmt.Errorf("%s must use https", name)
+	}
+	return u, nil
 }
 
 // Migrate is the configuration for `kubechaos-api migrate`.
@@ -74,6 +102,31 @@ func LoadServer(getenv func(string) string) (Server, error) {
 	}
 	c.LogLevel, err = parseLevel(getenv("KUBECHAOS_LOG_LEVEL"))
 	errs = append(errs, err)
+
+	if v := getenv("KUBECHAOS_PUBLIC_URL"); v == "" {
+		errs = append(errs, errors.New("KUBECHAOS_PUBLIC_URL is required"))
+	} else if u, err := validURL("KUBECHAOS_PUBLIC_URL", v, env); err != nil {
+		errs = append(errs, err)
+	} else if u.Path != "" && u.Path != "/" {
+		errs = append(errs, errors.New("KUBECHAOS_PUBLIC_URL must be an origin without a path"))
+	} else {
+		u.Path = ""
+		c.PublicURL = u
+	}
+	c.OIDCIssuer = getenv("KUBECHAOS_OIDC_ISSUER")
+	if c.OIDCIssuer == "" {
+		errs = append(errs, errors.New("KUBECHAOS_OIDC_ISSUER is required"))
+	} else if _, err := validURL("KUBECHAOS_OIDC_ISSUER", c.OIDCIssuer, env); err != nil {
+		errs = append(errs, err)
+	}
+	c.OIDCClientID = getenv("KUBECHAOS_OIDC_CLIENT_ID")
+	if c.OIDCClientID == "" {
+		errs = append(errs, errors.New("KUBECHAOS_OIDC_CLIENT_ID is required"))
+	}
+	c.OIDCClientSecret = getenv("KUBECHAOS_OIDC_CLIENT_SECRET")
+	if len(c.OIDCClientSecret) < 32 {
+		errs = append(errs, errors.New("KUBECHAOS_OIDC_CLIENT_SECRET is required (min 32 characters)"))
+	}
 	return c, errors.Join(errs...)
 }
 

@@ -5,8 +5,16 @@ policy-bounded** failure experiments; a cluster-local operator is the only compo
 acts on Kubernetes. There is no shell and no `kubectl` passthrough.
 
 **Status:** foundation phase. Done: architecture, dev environment, minimal Angular SPA,
-minimal Go API (deny-by-default), PostgreSQL migrations with append-only audit table.
-Next: Keycloak/OIDC integration.
+minimal Go API (deny-by-default), PostgreSQL migrations with append-only audit table,
+Keycloak/OIDC login (backend-for-frontend, server-side sessions, CSRF).
+Next: minimal Kubernetes operator and first CRD.
+
+### Dev users
+The imported `kubechaos` realm seeds `alice` (experimenter), `bob` (approver), `carol`
+(admin), `dave` (auditor), `eve` (viewer) and `mallory` (no roles). They share the password
+in `.env` → `KEYCLOAK_DEV_USER_PASSWORD`. The Keycloak admin console is at
+http://localhost:8180 (`KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`). After changing
+`deploy/keycloak/import/`, run `make keycloak-reset` to re-import.
 
 ## Documentation
 - [Architecture](docs/architecture/architecture.md)
@@ -35,7 +43,7 @@ make dev        # generate .env, start Postgres + Keycloak, create kind cluster
 make migrate    # apply DB migrations (migrator role)
 make api        # control plane on 127.0.0.1:8080 (app role; refuses over-privileged roles)
 make fe         # SPA on 127.0.0.1:4200, proxies /api to the API
-make test test-integration fe-test fe-build
+make test test-integration test-e2e fe-test fe-build
 make status
 make dev-down   # stop (keeps data)
 make dev-reset  # destroy data volumes and cluster

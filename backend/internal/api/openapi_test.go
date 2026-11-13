@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -11,6 +9,8 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
+
+	"github.com/kubechaos/kubechaos/backend/internal/auth/authtest"
 )
 
 const specPath = "../../../api/openapi/openapi.yaml"
@@ -38,7 +38,7 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 		}
 	}
 
-	router := NewRouter(Deps{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)), DB: fakeDB{}, MaxBodyBytes: 1})
+	router := newRouter(fakeDB{}, newAuth(authtest.NewMemStore(), &authtest.FakeIdP{}))
 	implemented := map[string]bool{}
 	err = chi.Walk(router.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		implemented[method+" "+strings.TrimSuffix(route, "/")] = true

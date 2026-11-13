@@ -141,6 +141,24 @@ Browser            Control plane (confidential client)          Keycloak
 - Session: idle timeout 30 min, absolute 8 h, rotated on login and on step-up, server-side
   revocation, and logout performs RP-initiated logout at Keycloak.
 
+**As implemented (foundation step 9):**
+- Sessions live in `app.sessions`. Only `SHA-256(token)` is stored, so a database read does
+  not yield usable cookies. In-flight logins live in `app.login_requests` (hashed state,
+  nonce, PKCE verifier, sanitised `returnTo`) and are consumed atomically
+  (`DELETE … RETURNING`), so each state value works exactly once.
+- The application stores **no OIDC tokens at all**: it does not need access or refresh
+  tokens yet. Roles are taken from the ID token's `groups` claim at login and fixed for
+  the session's lifetime (re-login refreshes them).
+- CSRF uses a per-session synchronizer token returned by `GET /api/v1/me`. The SPA sends it
+  in `X-KubeChaos-CSRF` on unsafe methods (same-origin URLs only), and the server also
+  requires `Origin` to equal the public origin. A double-submit cookie was not needed.
+- Keycloak independently enforces S256 PKCE, exact redirect URIs, and no implicit or
+  password grants for `kubechaos-api` (verified in development).
+- **Not yet implemented:** step-up (`acr_values`/`max_age=0`) and elevation grants. These
+  arrive with experiment submission, the first operation that requires them. The session
+  already records `acr` and `auth_time`. Login/logout audit events arrive with the audit
+  writer (foundation step 14).
+
 ### Step-up authentication [DECISION 11]
 
 ```

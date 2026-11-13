@@ -3,6 +3,19 @@
   <nav>
     <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Overview</a>
   </nav>
+  <span class="spacer"></span>
+  @switch (auth.state()) {
+    @case ('authenticated') {
+      <span class="user" data-testid="user">
+        {{ auth.user()?.displayName || auth.user()?.subject }}
+        <span class="roles">{{ auth.user()?.roles?.join(', ') || 'no roles' }}</span>
+      </span>
+      <button mat-stroked-button type="button" (click)="auth.logout()" data-testid="logout">Sign out</button>
+    }
+    @case ('anonymous') {
+      <button mat-flat-button type="button" (click)="auth.login()" data-testid="login">Sign in</button>
+    }
+  }
 </mat-toolbar>
 
 <main class="content">

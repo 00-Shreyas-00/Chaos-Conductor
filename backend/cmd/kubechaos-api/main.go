@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kubechaos/kubechaos/backend/internal/api"
+	"github.com/kubechaos/kubechaos/backend/internal/auth"
 	"github.com/kubechaos/kubechaos/backend/internal/config"
 	"github.com/kubechaos/kubechaos/backend/internal/repository"
 )
@@ -79,9 +80,23 @@ func serve(ctx context.Context) error {
 		return err
 	}
 
+	sessions := repository.NewSessionStore(pool)
+	authSvc := auth.NewService(auth.Config{
+		PublicURL:   cfg.PublicURL,
+		SessionIdle: 30 * time.Minute,
+		SessionMax:  8 * time.Hour,
+		LoginTTL:    10 * time.Minute,
+	}, sessions, auth.NewOIDC(auth.OIDCConfig{
+		Issuer:       cfg.OIDCIssuer,
+		ClientID:     cfg.OIDCClientID,
+		ClientSecret: cfg.OIDCClientSecret,
+		RedirectURL:  cfg.PublicURL.String() + "/auth/callback",
+	}), logger)
+	go purgeExpiredSessions(ctx, sessions, logger)
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool, MaxBodyBytes: cfg.MaxBodyBytes, Version: version}),
+		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool, Auth: authSvc, MaxBodyBytes: cfg.MaxBodyBytes, Version: version}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second, // SSE handlers will extend per-request via http.ResponseController
@@ -108,6 +123,23 @@ func serve(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// purgeExpiredSessions removes expired sessions and login requests every 10 minutes.
+// Lookups already ignore expired rows; this only bounds table growth.
+func purgeExpiredSessions(ctx context.Context, store auth.Store, logger *slog.Logger) {
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := store.DeleteExpired(ctx); err != nil {
+				logger.Warn("purge expired sessions", slog.Any("error", err))
+			}
+		}
+	}
 }
 
 func migrate(ctx context.Context, sub string) error {

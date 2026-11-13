@@ -1,9 +1,6 @@
 package api
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -11,28 +8,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/kubechaos/kubechaos/backend/internal/httpx"
 )
-
-type ctxKey int
-
-const requestIDKey ctxKey = iota
-
-// requestID assigns a server-generated ID to every request. Client-supplied X-Request-Id
-// values are deliberately ignored so callers cannot inject identifiers into logs or audit.
-func requestID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var b [16]byte
-		_, _ = rand.Read(b[:])
-		id := hex.EncodeToString(b[:])
-		w.Header().Set("X-Request-Id", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, id)))
-	})
-}
-
-func requestIDFrom(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey).(string)
-	return id
-}
 
 // accessLog writes one structured line per request. It logs the matched route pattern,
 // not the raw path, to keep cardinality bounded and avoid logging identifiers in URLs.
@@ -47,7 +25,7 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 				route = "unmatched"
 			}
 			logger.LogAttrs(r.Context(), slog.LevelInfo, "http_request",
-				slog.String("request_id", requestIDFrom(r.Context())),
+				slog.String("request_id", httpx.RequestIDFrom(r.Context())),
 				slog.String("method", r.Method),
 				slog.String("route", route),
 				slog.Int("status", ww.Status()),
@@ -69,10 +47,10 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 						panic(v)
 					}
 					logger.ErrorContext(r.Context(), "panic",
-						slog.String("request_id", requestIDFrom(r.Context())),
+						slog.String("request_id", httpx.RequestIDFrom(r.Context())),
 						slog.Any("panic", v),
 						slog.String("stack", string(debug.Stack())))
-					writeProblem(w, r, http.StatusInternalServerError, "Internal Server Error", "")
+					httpx.WriteProblem(w, r, http.StatusInternalServerError, "Internal Server Error", "")
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -103,13 +81,4 @@ func maxBody(n int64) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// requireAuthenticated is the deny-by-default gate for /api/v1. Until OIDC sessions exist
-// (foundation step 9) there is no way to authenticate, so every request is rejected.
-// Fail closed: this must never be replaced by a pass-through.
-func requireAuthenticated(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeProblem(w, r, http.StatusUnauthorized, "Unauthorized", "authentication required")
-	})
 }

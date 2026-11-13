@@ -8,20 +8,109 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kubechaos/kubechaos/backend/internal/auth"
+	"github.com/kubechaos/kubechaos/backend/internal/auth/authtest"
+	"github.com/kubechaos/kubechaos/backend/internal/httpx"
 )
 
 type fakeDB struct{ err error }
 
 func (f fakeDB) Ping(context.Context) error { return f.err }
 
+func discardLogger() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }
+
+func newAuth(store auth.Store, idp auth.IdP) *auth.Service {
+	u, _ := url.Parse("http://localhost:4200")
+	return auth.NewService(auth.Config{PublicURL: u, SessionIdle: time.Hour, SessionMax: time.Hour, LoginTTL: time.Minute},
+		store, idp, discardLogger())
+}
+
+func newRouter(db Pinger, a *auth.Service) http.Handler {
+	return NewRouter(Deps{Logger: discardLogger(), DB: db, Auth: a, MaxBodyBytes: 1024, Version: "test"})
+}
+
 func newTestServer(t *testing.T, db Pinger) *httptest.Server {
 	t.Helper()
-	h := NewRouter(Deps{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)), DB: db, MaxBodyBytes: 1024, Version: "test"})
-	srv := httptest.NewServer(h)
+	srv := httptest.NewServer(newRouter(db, newAuth(authtest.NewMemStore(), &authtest.FakeIdP{})))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// loggedIn returns a router plus a valid session cookie and CSRF token for an experimenter.
+func loggedIn(t *testing.T) (http.Handler, *http.Cookie, string) {
+	t.Helper()
+	store := authtest.NewMemStore()
+	idp := &authtest.FakeIdP{Claims: auth.Claims{Issuer: "https://idp.test", Subject: "alice", Name: "Alice",
+		Groups: []string{"kubechaos-experimenter"}, ACR: "1"}}
+	h := newRouter(fakeDB{}, newAuth(store, idp))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/auth/login", nil))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/auth/callback?code=c&state="+url.QueryEscape(idp.LastState), nil))
+	var cookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.SessionCookie {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("login failed: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	var csrf string
+	for _, s := range store.Sessions {
+		csrf = s.CSRFToken
+	}
+	return h, cookie, csrf
+}
+
+func TestMeReturnsPrincipal(t *testing.T) {
+	h, cookie, csrf := loggedIn(t)
+	req := httptest.NewRequest("GET", "/api/v1/me", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var me currentUser
+	if err := json.NewDecoder(rec.Body).Decode(&me); err != nil {
+		t.Fatal(err)
+	}
+	if me.Subject != "alice" || len(me.Roles) != 1 || me.Roles[0] != auth.RoleExperimenter || me.AuthLevel != "1" || me.CSRFToken != csrf {
+		t.Fatalf("unexpected /me: %+v", me)
+	}
+}
+
+func TestAuthenticatedUnsafeRequestsNeedCSRF(t *testing.T) {
+	h, cookie, csrf := loggedIn(t)
+	do := func(origin, token string) int {
+		req := httptest.NewRequest("POST", "/api/v1/experiments", nil)
+		req.AddCookie(cookie)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if token != "" {
+			req.Header.Set(auth.CSRFHeader, token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := do("http://localhost:4200", ""); c != http.StatusForbidden {
+		t.Errorf("no token: %d", c)
+	}
+	if c := do("https://evil.example", csrf); c != http.StatusForbidden {
+		t.Errorf("foreign origin: %d", c)
+	}
+	// Valid CSRF reaches routing; the route does not exist yet.
+	if c := do("http://localhost:4200", csrf); c != http.StatusNotFound && c != http.StatusMethodNotAllowed {
+		t.Errorf("valid csrf: %d", c)
+	}
 }
 
 func get(t *testing.T, url string) *http.Response {
@@ -34,12 +123,12 @@ func get(t *testing.T, url string) *http.Response {
 	return resp
 }
 
-func decodeProblem(t *testing.T, resp *http.Response) Problem {
+func decodeProblem(t *testing.T, resp *http.Response) httpx.Problem {
 	t.Helper()
 	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
 		t.Fatalf("content-type = %q, want application/problem+json", ct)
 	}
-	var p Problem
+	var p httpx.Problem
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		t.Fatal(err)
 	}

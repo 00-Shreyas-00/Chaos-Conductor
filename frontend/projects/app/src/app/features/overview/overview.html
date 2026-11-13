@@ -1,5 +1,9 @@
 <h1>Overview</h1>
 
+@if (loginError()) {
+  <p class="banner" role="alert" data-testid="login-error">Sign-in failed. Please try again.</p>
+}
+
 <section class="cards">
   <mat-card appearance="outlined">
     <mat-card-header>
@@ -19,11 +23,17 @@
       <mat-card-title>Session</mat-card-title>
     </mat-card-header>
     <mat-card-content>
-      @switch (status.session()) {
-        @case ('authenticated') { <p class="state ok" data-testid="session">Signed in</p> }
+      @switch (auth.state()) {
+        @case ('authenticated') {
+          <p class="state ok" data-testid="session">Signed in as {{ auth.user()?.displayName || auth.user()?.subject }}</p>
+          <dl class="facts">
+            <dt>Roles</dt><dd data-testid="roles">{{ auth.user()?.roles?.join(', ') || 'none' }}</dd>
+            <dt>Authentication level</dt><dd>{{ auth.user()?.authLevel || 'unknown' }}</dd>
+          </dl>
+        }
         @case ('anonymous') {
           <p class="state" data-testid="session">Not signed in</p>
-          <p class="hint">Sign-in via Keycloak (OIDC) arrives in the next foundation step.</p>
+          <button mat-flat-button type="button" (click)="auth.login()">Sign in with Keycloak</button>
         }
         @case ('error') { <p class="state bad" data-testid="session">Unable to determine session</p> }
         @default { <p class="state" data-testid="session">Checking…</p> }
@@ -32,4 +42,4 @@
   </mat-card>
 </section>
 
-<button mat-stroked-button type="button" (click)="status.refresh()">Refresh</button>
+<button mat-stroked-button type="button" (click)="refresh()">Refresh</button>

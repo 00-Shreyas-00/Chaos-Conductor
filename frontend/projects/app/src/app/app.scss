@@ -7,6 +7,23 @@
   font: var(--mat-sys-title-large);
 }
 
+.spacer {
+  flex: 1 1 auto;
+}
+
+.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font: var(--mat-sys-body-medium);
+  line-height: 1.2;
+}
+
+.roles {
+  font: var(--mat-sys-label-small);
+  color: var(--mat-sys-on-surface-variant);
+}
+
 .active {
   background: var(--mat-sys-secondary-container);
 }
