@@ -1,0 +1,105 @@
+openapi: 3.0.3
+info:
+  title: KubeChaos Control Plane API
+  version: 0.1.0
+  description: |
+    Public REST API of the KubeChaos control plane.
+
+    Security model (see docs/architecture/architecture.md):
+    - Authentication is a server-side session (BFF) carried in an HttpOnly cookie; the
+      browser never receives OIDC or Kubernetes credentials.
+    - Everything under /api/v1 is deny-by-default. Unknown paths under /api/v1 return 401
+      to unauthenticated callers.
+    - There is no endpoint that accepts commands, shell, kubectl, or PromQL.
+
+    Every route implemented by the server must appear here (enforced by a unit test).
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness probe
+      description: Process is running. Does not check dependencies.
+      security: []
+      responses:
+        "200":
+          description: Alive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+  /readyz:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Dependencies (PostgreSQL) are reachable. Failure details are logged, not returned.
+      security: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "503":
+          $ref: "#/components/responses/Problem"
+  /api/v1/me:
+    get:
+      operationId: getCurrentUser
+      summary: Current user identity, roles and authentication level
+      description: Returns 401 until OIDC authentication is implemented.
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrentUser" }
+        "401":
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-kc_session
+  responses:
+    Problem:
+      description: Error (RFC 9457 problem details)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Status:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string }
+        version: { type: string }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        requestId: { type: string }
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required: [subject, issuer, roles, authLevel]
+      properties:
+        subject: { type: string }
+        issuer: { type: string }
+        displayName: { type: string }
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [viewer, experimenter, approver, admin, auditor]
+        authLevel:
+          type: string
+          description: Keycloak ACR level of the current session (e.g. "1" password, "2" MFA step-up).
+security:
+  - sessionCookie: []

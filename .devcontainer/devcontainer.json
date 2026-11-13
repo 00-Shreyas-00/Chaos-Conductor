@@ -4,12 +4,22 @@
   "name": "kubechaos",
   "image": "mcr.microsoft.com/devcontainers/base:bookworm@sha256:99f5250dd2d5f8b11046d5662dd94c1e3c1dae56b560c7caad5ceb7edf349046",
   "features": {
-    "ghcr.io/devcontainers/features/go:1": { "version": "1.25" },
+    // installGoTools=false: the feature otherwise pipes an unpinned remote script into sh to
+    // install golangci-lint (and fetches large GitHub release assets). Linters will be pinned
+    // via `go tool` in go.mod when added; the VS Code Go extension installs gopls on demand.
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.26", "installGoTools": false },
     "ghcr.io/devcontainers/features/node:1": { "version": "22" },
     "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-    // kubectl pinned to the kind node version (kind v0.29.0 → Kubernetes v1.33.1) to stay within the supported ±1 skew.
-    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": { "version": "1.33.1", "minikube": "none" }
+    // Helm only. kubectl is installed in post-create.sh from the signed pkgs.k8s.io apt repo
+    // (dl.k8s.io binary downloads proved unreliable on some networks: ~25 kB/s for 60 MB).
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": { "version": "none", "minikube": "none" }
   },
+  // node_modules lives on a named volume: the host bind mount (notably on Windows) is far too
+  // slow for it — Vitest workers time out loading jsdom. Measured: 60s+ and failing on the bind
+  // mount vs 2.4s on container-local storage.
+  "mounts": [
+    "source=kubechaos-frontend-node-modules,target=${containerWorkspaceFolder}/frontend/node_modules,type=volume"
+  ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "forwardPorts": [4200, 4201, 8080, 8081, 8180, 5432],
   "portsAttributes": {

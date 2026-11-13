@@ -83,7 +83,12 @@ Residual risk is stated honestly where mitigation is partial.
 ### T3 Compromised frontend (malicious JS: XSS, supply-chain in npm deps, tampered bundle)
 - **Mitigations:** the frontend holds no credentials or tokens. Strict CSP (`script-src
   'self'`, no inline/eval, `frame-ancestors 'none'`) plus Trusted Types. Angular's default
-  sanitization, with no `bypassSecurityTrust*` without review. Lockfile with `npm ci`,
+  sanitization, with no `bypassSecurityTrust*` without review. No third-party fonts,
+  icons or scripts (system font, no CDN). Production builds use Subresource Integrity and
+  disable inline critical CSS. **Implementation note:** with SRI enabled, Angular emits
+  lazy-chunk hashes in an inline `<script type="importmap">`, so the proxy's CSP must
+  allow exactly that script by hash (`'sha256-…'`, computed at build time), never via
+  `'unsafe-inline'`. Lockfile with `npm ci`,
   dependency review, and SRI where possible. **All enforcement is in the backend and
   operator**: a malicious client can send any request, and every request is validated
   as if hostile.

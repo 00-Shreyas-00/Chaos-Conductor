@@ -1,0 +1,10 @@
+<mat-toolbar class="toolbar">
+  <span class="brand">KubeChaos</span>
+  <nav>
+    <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Overview</a>
+  </nav>
+</mat-toolbar>
+
+<main class="content">
+  <router-outlet />
+</main>

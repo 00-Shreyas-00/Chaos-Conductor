@@ -1,0 +1,35 @@
+<h1>Overview</h1>
+
+<section class="cards">
+  <mat-card appearance="outlined">
+    <mat-card-header>
+      <mat-card-title>Control plane</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      @switch (status.readiness()) {
+        @case ('ready') { <p class="state ok" data-testid="readiness">Ready</p> }
+        @case ('unavailable') { <p class="state bad" data-testid="readiness">Unavailable</p> }
+        @default { <p class="state" data-testid="readiness">Checking…</p> }
+      }
+    </mat-card-content>
+  </mat-card>
+
+  <mat-card appearance="outlined">
+    <mat-card-header>
+      <mat-card-title>Session</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      @switch (status.session()) {
+        @case ('authenticated') { <p class="state ok" data-testid="session">Signed in</p> }
+        @case ('anonymous') {
+          <p class="state" data-testid="session">Not signed in</p>
+          <p class="hint">Sign-in via Keycloak (OIDC) arrives in the next foundation step.</p>
+        }
+        @case ('error') { <p class="state bad" data-testid="session">Unable to determine session</p> }
+        @default { <p class="state" data-testid="session">Checking…</p> }
+      }
+    </mat-card-content>
+  </mat-card>
+</section>
+
+<button mat-stroked-button type="button" (click)="status.refresh()">Refresh</button>

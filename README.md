@@ -4,8 +4,9 @@ A security-conscious, Kubernetes-native chaos testing platform. Users create **t
 policy-bounded** failure experiments; a cluster-local operator is the only component that
 acts on Kubernetes. There is no shell and no `kubectl` passthrough.
 
-**Status:** foundation phase. Architecture accepted; dev environment in place; no
-application code yet.
+**Status:** foundation phase. Done: architecture, dev environment, minimal Angular SPA,
+minimal Go API (deny-by-default), PostgreSQL migrations with append-only audit table.
+Next: Keycloak/OIDC integration.
 
 ## Documentation
 - [Architecture](docs/architecture/architecture.md)
@@ -31,6 +32,10 @@ kind, kubectl, helm and make installed.
 
 ```bash
 make dev        # generate .env, start Postgres + Keycloak, create kind cluster
+make migrate    # apply DB migrations (migrator role)
+make api        # control plane on 127.0.0.1:8080 (app role; refuses over-privileged roles)
+make fe         # SPA on 127.0.0.1:4200, proxies /api to the API
+make test test-integration fe-test fe-build
 make status
 make dev-down   # stop (keeps data)
 make dev-reset  # destroy data volumes and cluster
@@ -41,6 +46,10 @@ then `docker exec -it -u vscode -w /workspaces/<repo-dir> <container> bash`. On 
 CLI has been seen to hang after "Container started" without running `postCreateCommand`. If
 that happens, run `bash .devcontainer/post-create.sh` inside the container. From Git Bash,
 set `MSYS_NO_PATHCONV=1` so Linux paths are not rewritten.
+
+After a devcontainer rebuild, the kind cluster may come back with duplicate node IPs and
+never become Ready (kind does not support Docker daemon restarts reliably). It holds no
+state, so recreate it with `make kind-down dev`.
 
 `.env` holds randomly generated **dev-only** secrets and is gitignored. All services bind
 to `127.0.0.1` only.

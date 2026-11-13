@@ -52,7 +52,8 @@ infra-down: ## Stop Postgres + Keycloak
 .PHONY: kind-up
 kind-up: ## Create the kind cluster if absent
 	@if kind get clusters | grep -qx '$(KIND_CLUSTER)'; then \
-	  echo "kind cluster $(KIND_CLUSTER) already exists"; \
+	  echo "kind cluster $(KIND_CLUSTER) already exists; (re)exporting kubeconfig"; \
+	  kind export kubeconfig --name $(KIND_CLUSTER); \
 	else \
 	  kind create cluster --config deploy/kind/kind-config.yaml --wait 120s; \
 	fi
@@ -62,6 +63,55 @@ kind-up: ## Create the kind cluster if absent
 .PHONY: kind-down
 kind-down: ## Delete the kind cluster
 	kind delete cluster --name $(KIND_CLUSTER) || true
+
+## ---------- backend ----------
+
+# Dev DSNs are derived from .env (hex passwords are URL-safe). Plaintext is allowed only
+# because KUBECHAOS_ENV=development; the API refuses non-verify-full DSNs elsewhere.
+DB_HOST := 127.0.0.1:5432
+dsn = postgres://$(1):$${$(2)}@$(DB_HOST)/kubechaos?sslmode=disable
+BACKEND_DEV_ENV = set -a; . ./.env; set +a; export KUBECHAOS_ENV=development; \
+	export KUBECHAOS_DATABASE_URL="$(call dsn,kubechaos_app,KUBECHAOS_APP_PASSWORD)"; \
+	export KUBECHAOS_MIGRATE_DATABASE_URL="$(call dsn,kubechaos_migrator,KUBECHAOS_MIGRATOR_PASSWORD)"
+
+.PHONY: test
+test: ## Run Go unit tests
+	go vet ./backend/...
+	go test -count=1 ./backend/...
+
+.PHONY: test-integration
+test-integration: env ## Run Go integration tests against dev Postgres (needs make infra-up)
+	@$(BACKEND_DEV_ENV); \
+	export KUBECHAOS_TEST_MIGRATOR_URL="$$KUBECHAOS_MIGRATE_DATABASE_URL"; \
+	export KUBECHAOS_TEST_APP_URL="$$KUBECHAOS_DATABASE_URL"; \
+	export KUBECHAOS_TEST_AUDITOR_URL="$(call dsn,kubechaos_auditor_ro,KUBECHAOS_AUDITOR_PASSWORD)"; \
+	go test -count=1 -tags integration ./backend/...
+
+.PHONY: migrate
+migrate: env ## Apply database migrations (migrator role)
+	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api migrate up
+
+.PHONY: api
+api: env ## Run the control plane API on 127.0.0.1:8080 (app role)
+	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api serve
+
+## ---------- frontend ----------
+
+.PHONY: fe-install
+fe-install: ## Install frontend dependencies exactly from package-lock.json
+	cd frontend && npm ci
+
+.PHONY: fe-test
+fe-test: ## Run frontend unit tests (Vitest)
+	cd frontend && npx ng test app --watch=false
+
+.PHONY: fe-build
+fe-build: ## Production build of the SPA
+	cd frontend && npx ng build app --configuration production
+
+.PHONY: fe
+fe: ## Serve the SPA on 127.0.0.1:4200, proxying /api to the API (run `make api` too)
+	cd frontend && npx ng serve app
 
 .PHONY: status
 status: ## Show infrastructure status

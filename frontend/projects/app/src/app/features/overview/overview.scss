@@ -1,0 +1,19 @@
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.state {
+  font: var(--mat-sys-title-medium);
+  margin: 8px 0 0;
+
+  &.ok { color: var(--mat-sys-primary); }
+  &.bad { color: var(--mat-sys-error); }
+}
+
+.hint {
+  color: var(--mat-sys-on-surface-variant);
+  margin: 4px 0 0;
+}
