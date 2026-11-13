@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+*.pem
+*.key
+kubeconfig*
+
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+
+# Node / Angular
+node_modules/
+dist/
+.angular/
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

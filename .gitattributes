@@ -1,0 +1,4 @@
+# Normalise to LF so shell scripts and Makefiles work inside Linux containers when cloned on Windows.
+* text=auto eol=lf
+*.png binary
+*.ico binary
