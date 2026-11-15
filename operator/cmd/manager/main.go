@@ -95,7 +95,11 @@ func run(ctx context.Context, log logr.Logger) error {
 	log.Info("cluster identity loaded", "clusterID", id.ClusterID, "environment", string(id.Environment), "namespace", ns)
 
 	if err := (&controller.ExperimentReconciler{
-		Client: mgr.GetClient(), Identity: id, Namespace: ns,
+		Client:    mgr.GetClient(),
+		Reader:    mgr.GetAPIReader(), // uncached: target pods/namespaces need only get/list
+		Recorder:  mgr.GetEventRecorderFor("kubechaos-operator"),
+		Identity:  id,
+		Namespace: ns,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup chaosexperiment controller: %w", err)
 	}

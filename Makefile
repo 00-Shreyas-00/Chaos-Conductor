@@ -130,7 +130,8 @@ crds-install: ## Install CRDs and admission policies (cluster-admin action)
 
 OPERATOR_IMAGE   := kubechaos-operator:dev
 OPERATOR_CHART   := deploy/helm/kubechaos-operator
-OPERATOR_VALUES  := --set clusterIdentity.clusterID=dev-kind-01 --set clusterIdentity.environment=development
+OPERATOR_VALUES  := --set clusterIdentity.clusterID=dev-kind-01 --set clusterIdentity.environment=development \
+                    --set 'chaosTargets.namespaces={demo}'
 KUBECTL          := kubectl --context kind-$(KIND_CLUSTER)
 
 .PHONY: operator-test
@@ -144,7 +145,13 @@ operator-image: ## Build the operator image and load it into kind
 	kind load docker-image $(OPERATOR_IMAGE) --name $(KIND_CLUSTER)
 
 .PHONY: operator-deploy
-operator-deploy: crds-install ## Deploy the operator into kind (CRDs, namespace with Pod Security labels, chart)
+.PHONY: demo-deploy
+demo-deploy: ## Deploy the demo workloads (namespace demo, opted in) used by PodKill tests
+	$(KUBECTL) apply -f deploy/demo/demo.yaml
+	$(KUBECTL) -n demo rollout status deployment/web deployment/solo deployment/db --timeout 120s
+	$(KUBECTL) -n demo wait --for=condition=Ready pod/orphan --timeout 120s
+
+operator-deploy: crds-install demo-deploy ## Deploy the operator into kind (CRDs, demo ns, namespace with Pod Security labels, chart)
 	$(KUBECTL) apply -f deploy/k8s/namespace.yaml
 	@# Pin NetworkPolicy egress to the API server: Service IP and real endpoint, discovered live.
 	@svc=$$($(KUBECTL) get svc kubernetes -o jsonpath='{.spec.clusterIP}'); \
@@ -167,6 +174,10 @@ operator-verify: ## Check the deployed operator's effective RBAC against expecta
 .PHONY: crd-verify
 crd-verify: ## Check ChaosExperiment validation, immutability and admission policy against kind
 	@bash scripts/verify-crd.sh
+
+.PHONY: podkill-verify
+podkill-verify: ## Run PodKill scenarios against the demo workloads in kind (deletes demo pods!)
+	@bash scripts/verify-podkill.sh
 
 RBAC_SNAPSHOT := $(OPERATOR_CHART)/rbac.snapshot.yaml
 rbac_render = helm template kubechaos-operator $(OPERATOR_CHART) -n kubechaos-system $(OPERATOR_VALUES) \

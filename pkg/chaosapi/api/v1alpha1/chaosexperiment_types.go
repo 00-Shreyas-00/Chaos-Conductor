@@ -15,6 +15,14 @@ const ExperimentNamespace = "kubechaos-system"
 // ProtectedNamespaces can never be targeted, whatever any policy says.
 var ProtectedNamespaces = []string{"kube-system", "kube-public", "kube-node-lease", ExperimentNamespace}
 
+// Labels with security meaning, set by cluster administrators.
+const (
+	// LabelEnabled must be "true" on a namespace before it can be targeted (opt-in, D5).
+	LabelEnabled = "chaos.kubechaos.io/enabled"
+	// LabelProtected = "true" on a namespace or pod excludes it from every experiment.
+	LabelProtected = "chaos.kubechaos.io/protected"
+)
+
 // Hard upper bounds of the API. Cluster policy (ChaosPolicy, later) may only narrow them.
 const (
 	MaxSteps           = 20
@@ -179,6 +187,8 @@ const (
 const (
 	// ConditionAccepted reports whether the operator accepted the experiment for execution.
 	ConditionAccepted = "Accepted"
+	// ConditionFinished is set when the experiment ends after starting (True only on success).
+	ConditionFinished = "Finished"
 )
 
 // ChaosExperimentStatus is written only by the operator (status subresource).
@@ -196,6 +206,72 @@ type ChaosExperimentStatus struct {
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=16
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// StartedAt is when execution began; maxDuration is measured from here.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// CompletedAt is when the experiment reached a terminal phase after starting.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+	// CurrentStep is the index of the step being executed.
+	// +optional
+	CurrentStep int32 `json:"currentStep,omitempty"`
+	// Steps mirrors spec.steps one-to-one once execution has started.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	Steps []StepStatus `json:"steps,omitempty"`
+}
+
+// StepPhase is the progress of one step.
+// +kubebuilder:validation:Enum=Pending;Running;Injecting;Observing;Succeeded;Failed;Skipped
+type StepPhase string
+
+const (
+	StepPending StepPhase = "Pending"
+	StepRunning StepPhase = "Running" // waits
+	// StepInjecting is written (with the chosen targets) BEFORE any destructive call. Finding a
+	// step still Injecting after a restart means the outcome is unknown: it is failed, never
+	// retried (at-most-once execution, architecture §6 / D7).
+	StepInjecting StepPhase = "Injecting"
+	StepObserving StepPhase = "Observing"
+	StepSucceeded StepPhase = "Succeeded"
+	StepFailed    StepPhase = "Failed"
+	StepSkipped   StepPhase = "Skipped"
+)
+
+// StepStatus records what happened in one step.
+type StepStatus struct {
+	Phase StepPhase `json:"phase"`
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+	// WaitUntil is the end of a wait step.
+	// +optional
+	WaitUntil *metav1.Time `json:"waitUntil,omitempty"`
+	// Targets are the exact pods chosen for a fault step (recorded before injection).
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	Targets []PodRef `json:"targets,omitempty"`
+	// ReadyBefore is the number of Ready pods matching the selector before injection.
+	// +optional
+	ReadyBefore int32 `json:"readyBefore,omitempty"`
+	// InjectedAt is when the destructive action was issued.
+	// +optional
+	InjectedAt *metav1.Time `json:"injectedAt,omitempty"`
+	// RecoveryMillis is the time from injection until ReadyBefore pods were Ready again.
+	// +optional
+	RecoveryMillis *int64 `json:"recoveryMillis,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Message string `json:"message,omitempty"`
+}
+
+// PodRef identifies one pod precisely (UID guards against same-name replacements).
+type PodRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid"`
 }
 
 // ChaosExperimentList is a list of ChaosExperiments.

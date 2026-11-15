@@ -5,6 +5,12 @@ clusterIdentity:
   clusterID: ""          # DNS-1123 label, e.g. dev-kind-01
   environment: ""        # development | staging | production
 
+# Namespaces the operator may act in (opt-in allow-list, enforced by Kubernetes RBAC).
+# Each must exist and also be labelled chaos.kubechaos.io/enabled=true. Protected
+# namespaces are refused at install time. Empty = the operator cannot touch any workload.
+chaosTargets:
+  namespaces: []
+
 image:
   repository: kubechaos-operator
   tag: dev

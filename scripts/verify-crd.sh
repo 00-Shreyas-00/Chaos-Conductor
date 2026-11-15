@@ -59,10 +59,12 @@ kubectl delete ns kubechaos-crd-test --wait=false >/dev/null 2>&1
 
 echo "Immutability and operator decision (real objects):"
 kubectl -n "$NS" delete chaosexperiment crd-verify-ok crd-verify-other --ignore-not-found >/dev/null
-exp crd-verify-ok $NS "[$KILL,$WAIT]" | kubectl apply -f - >/dev/null
+# Starts with a 60s wait and is cancelled before its kill step: verifies execution starts in a
+# development cluster without ever killing a pod.
+exp crd-verify-ok $NS "[{\"wait\":{\"duration\":\"60s\"}},$KILL]" | kubectl apply -f - >/dev/null
 exp crd-verify-other $NS "[$KILL]" | sed "s/\"clusterID\":\"$CLUSTER_ID\"/\"clusterID\":\"prod-eu-1\"/" | kubectl apply -f - >/dev/null
 phase() { for _ in $(seq 1 30); do p=$(kubectl -n "$NS" get chaosexperiment "$1" -o jsonpath='{.status.phase}'); [ -n "$p" ] && { echo "$p"; return; }; sleep 1; done; echo "<none>"; }
-[ "$(phase crd-verify-ok)" = "Pending" ]     && pass "operator: valid experiment -> Pending (no execution engine yet)" || bad "operator: valid experiment" "phase=$(phase crd-verify-ok)"
+[ "$(phase crd-verify-ok)" = "Running" ]     && pass "operator: valid experiment in opted-in namespace -> Running (waiting)" || bad "operator: valid experiment" "phase=$(phase crd-verify-ok)"
 [ "$(phase crd-verify-other)" = "Rejected" ] && pass "operator: other cluster's experiment -> Rejected (ClusterMismatch)" || bad "operator: clusterID mismatch" "phase=$(phase crd-verify-other)"
 reason=$(kubectl -n "$NS" get chaosexperiment crd-verify-other -o jsonpath='{.status.conditions[?(@.type=="Accepted")].reason}')
 [ "$reason" = "ClusterMismatch" ] && pass "condition reason ClusterMismatch" || bad "condition reason" "$reason"
@@ -77,7 +79,7 @@ out=$(kubectl -n "$NS" patch chaosexperiment crd-verify-ok --type merge -p '{"sp
   && bad "cancel must not be revertible" "$out" || { [[ "$out" == *"cannot be reverted"* ]] && pass "rejected: cancel true -> false" || bad "revert reason" "$out"; }
 for _ in $(seq 1 20); do [ "$(kubectl -n "$NS" get chaosexperiment crd-verify-ok -o jsonpath='{.status.phase}')" = "Aborted" ] && break; sleep 1; done
 [ "$(kubectl -n "$NS" get chaosexperiment crd-verify-ok -o jsonpath='{.status.phase}')" = "Aborted" ] \
-  && pass "operator: cancelled experiment -> Aborted" || bad "operator: cancel" "phase=$(kubectl -n "$NS" get chaosexperiment crd-verify-ok -o jsonpath='{.status.phase}')"
+  && pass "operator: cancelled during wait -> Aborted (kill step never ran)" || bad "operator: cancel" "phase=$(kubectl -n "$NS" get chaosexperiment crd-verify-ok -o jsonpath='{.status.phase}')"
 out=$(kubectl -n "$NS" patch chaosexperiment crd-verify-other --subresource=status --type merge \
   --as=system:serviceaccount:default:default -p '{"status":{"phase":"Completed"}}' 2>&1) \
   && bad "arbitrary SA must not write status" "$out" || pass "rejected: status write by an unrelated ServiceAccount"

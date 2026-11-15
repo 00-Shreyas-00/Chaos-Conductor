@@ -312,6 +312,42 @@ never cluster-wide.
   `chaosexperiments/status`. It cannot create, modify or delete experiments.
 - `make crd-verify` checks all of this against the live cluster (29 checks).
 
+**As implemented (foundation step 12): PodKill execution.**
+- **Execution gates, all fail closed and checked before anything runs:**
+  - The cluster identity must be `development`. In staging and production, experiments stay
+    `Pending/ExecutionDisabled` until ChaosPolicy (step 15) and approval attestations (§15)
+    are enforced.
+  - Every target namespace must be readable by the operator **and** labelled
+    `chaos.kubechaos.io/enabled=true`. Readability means Helm `chaosTargets.namespaces`
+    granted it; Forbidden and NotFound are treated alike (`NamespaceNotOptedIn`).
+  - A namespace labelled `chaos.kubechaos.io/protected=true` is refused.
+- **Planning (read-only, at execution time).** Candidates are pods matching the selector in
+  the one namespace that are Running, Ready, not terminating, owned by a controller, not
+  protected and not static. Per owning workload, at least one Ready pod must survive. If
+  `count` pods can't be chosen under these rules the step fails (`blast radius exceeded`);
+  it never silently kills fewer. Selection is random (`crypto/rand`).
+- **At-most-once injection.**
+  1. The chosen pod UIDs are written to `status.steps[i].targets` with phase `Injecting`,
+     under an optimistic lock (a concurrent change such as `cancel` aborts the write and
+     deletes nothing).
+  2. The pods are deleted, each with a **UID precondition**.
+  3. The step moves to `Observing`.
+
+  A step found `Injecting` after a restart is failed (`InjectionInterrupted`) and **never
+  retried**.
+- **Observation.** The step succeeds once the selector again has `readyBefore` Ready pods,
+  not counting the killed UIDs. `recoveryMillis` is recorded, and Kubernetes Events form the
+  timeline: `Started → TargetsSelected → PodDeleted → Recovered → Completed`.
+  `maxDuration` is a hard deadline (`MaxDurationExceeded`), and `cancel` aborts and skips the
+  remaining steps.
+- **RBAC per target namespace:** `pods: get, list, delete` only (no watch, update, exec or
+  eviction). Cluster-wide, only `get` on the **named** target namespaces. The chart refuses
+  protected or invalid names and renders no ClusterRole when there are no targets, because
+  an empty `resourceNames` would mean *all* namespaces.
+- **Live verification:** `make podkill-verify` runs 10 scenarios against `deploy/demo`. It
+  compares the UIDs of every demo pod before and after each scenario, proving exactly which
+  pods were deleted and that nothing else was touched.
+
 ---
 
 ## 7. Operator architecture
@@ -376,6 +412,8 @@ each documented in this table.
 | `events`, `events.k8s.io/events` | create, patch | own namespace |
 | `chaos.kubechaos.io/chaosexperiments` | get, list, watch | own namespace (step 11) |
 | `chaos.kubechaos.io/chaosexperiments/status` | get, update, patch | own namespace (step 11) |
+| `pods` | get, list, delete | **only** in namespaces listed in `chaosTargets.namespaces` (step 12) |
+| `namespaces` (cluster-scoped) | get | `resourceNames` = exactly those target namespaces (step 12) |
 
 Enforcement around it:
 - `deploy/helm/kubechaos-operator/rbac.snapshot.yaml` and `make rbac-check`: any RBAC change

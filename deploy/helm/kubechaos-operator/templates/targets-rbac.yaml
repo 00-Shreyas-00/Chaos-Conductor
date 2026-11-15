@@ -1,0 +1,78 @@
+{{- /*
+  Per-namespace target access (opt-in, D5/D17). The operator can touch pods ONLY in the
+  namespaces listed in .Values.chaosTargets.namespaces — Kubernetes RBAC enforces the
+  allow-list, not just operator code. The namespace must additionally carry the label
+  chaos.kubechaos.io/enabled=true (checked by the operator before every experiment).
+  Each namespace listed here must already exist (the RoleBinding lives in it).
+*/ -}}
+{{- $protected := list "kube-system" "kube-public" "kube-node-lease" "kubechaos-system" }}
+{{- $targets := .Values.chaosTargets.namespaces | default list }}
+{{- range $targets }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" (. | toString)) }}
+{{- fail (printf "chaosTargets.namespaces: %q is not a valid namespace name" .) }}
+{{- end }}
+{{- if has . $protected }}
+{{- fail (printf "chaosTargets.namespaces: %q is protected and can never be a chaos target" .) }}
+{{- end }}
+{{- end }}
+{{- if $targets }}
+# Read the opt-in/protected labels of exactly the listed namespaces. An empty resourceNames
+# list would mean ALL namespaces, so this rule is rendered only when targets exist.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubechaos-operator-target-namespaces
+  labels:
+    {{- include "kubechaos-operator.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: {{ toJson $targets }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubechaos-operator-target-namespaces
+  labels:
+    {{- include "kubechaos-operator.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubechaos-operator-target-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- range $targets }}
+---
+# PodKill in {{ . }}: uncached get/list (no watch) and delete. No update, exec, eviction.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubechaos-operator-target
+  namespace: {{ . }}
+  labels:
+    {{- include "kubechaos-operator.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubechaos-operator-target
+  namespace: {{ . }}
+  labels:
+    {{- include "kubechaos-operator.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubechaos-operator-target
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: {{ $.Release.Namespace }}
+{{- end }}

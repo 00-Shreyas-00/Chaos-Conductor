@@ -1,4 +1,43 @@
 ---
+# Source: kubechaos-operator/templates/targets-rbac.yaml
+# Read the opt-in/protected labels of exactly the listed namespaces. An empty resourceNames
+# list would mean ALL namespaces, so this rule is rendered only when targets exist.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubechaos-operator-target-namespaces
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["demo"]
+    verbs: ["get"]
+
+---
+# Source: kubechaos-operator/templates/targets-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubechaos-operator-target-namespaces
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubechaos-operator-target-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: kubechaos-system
+
+---
 # Source: kubechaos-operator/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -38,6 +77,24 @@ rules:
     verbs: ["get", "update", "patch"]
 
 ---
+# Source: kubechaos-operator/templates/targets-rbac.yaml
+# PodKill in demo: uncached get/list (no watch) and delete. No update, exec, eviction.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubechaos-operator-target
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+
+---
 # Source: kubechaos-operator/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -53,6 +110,27 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: kubechaos-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: kubechaos-system
+
+---
+# Source: kubechaos-operator/templates/targets-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubechaos-operator-target
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubechaos-operator-target
 subjects:
   - kind: ServiceAccount
     name: kubechaos-operator

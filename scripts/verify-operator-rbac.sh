@@ -39,7 +39,27 @@ check no  list chaosexperiments.chaos.kubechaos.io -A
 check no  update customresourcedefinitions.apiextensions.k8s.io
 check no  delete validatingadmissionpolicies.admissionregistration.k8s.io
 
-echo "Must be denied (foundation step 10 — no workload access yet):"
+echo "Must be allowed in opted-in target namespace demo (PodKill):"
+check yes get namespaces/demo
+check yes list pods -n demo
+check yes delete pods -n demo
+
+echo "Must be denied in targets (only get/list/delete pods):"
+check no  watch pods -n demo
+check no  update pods -n demo
+check no  create pods -n demo
+check no  create pods/exec -n demo
+check no  create pods/eviction -n demo
+check no  patch pods/ephemeralcontainers -n demo
+check no  get secrets -n demo
+check no  delete deployments.apps -n demo
+check no  update deployments.apps/scale -n demo
+check no  list namespaces
+check no  get namespaces/default
+check no  get namespaces/kube-system
+check no  update namespaces/demo
+
+echo "Must be denied elsewhere:"
 check no  get configmaps/other -n "$NS"
 check no  list configmaps -n "$NS"
 check no  update configmaps/kubechaos-cluster-identity -n "$NS"

@@ -8,9 +8,10 @@ acts on Kubernetes. There is no shell and no `kubectl` passthrough.
 minimal Go API (deny-by-default), PostgreSQL migrations with append-only audit table,
 Keycloak/OIDC login (backend-for-frontend, server-side sessions, CSRF), minimal hardened
 Kubernetes operator (identity, leader election, least-privilege RBAC, NetworkPolicy),
-`ChaosExperiment` CRD with API-server-enforced validation and an operator that validates
-and records decisions (no execution yet).
-Next: first experiment primitive, PodKill.
+`ChaosExperiment` CRD with API-server-enforced validation, and the first fault primitive,
+**PodKill** (development clusters and opted-in namespaces only, at-most-once, never the
+last Ready replica).
+Next: hardened experiment lifecycle.
 
 ### Operator (kind)
 ```bash
@@ -18,6 +19,7 @@ make operator-image operator-deploy   # build distroless image, load into kind, 
 make operator-verify                  # assert effective RBAC (kubectl auth can-i matrix)
 make rbac-check                       # rendered RBAC must equal the reviewed snapshot
 make crd-verify                       # ChaosExperiment validation/immutability/admission, live
+make podkill-verify                   # 10 PodKill scenarios against deploy/demo (deletes demo pods)
 make generate                         # regenerate deepcopy + CRD from pkg/chaosapi types
 ```
 The operator reads its cluster identity from the immutable ConfigMap

@@ -214,6 +214,11 @@ spec:
             description: ChaosExperimentStatus is written only by the operator (status
               subresource).
             properties:
+              completedAt:
+                description: CompletedAt is when the experiment reached a terminal
+                  phase after starting.
+                format: date-time
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -274,6 +279,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentStep:
+                description: CurrentStep is the index of the step being executed.
+                format: int32
+                type: integer
               message:
                 maxLength: 1024
                 type: string
@@ -293,6 +302,80 @@ spec:
                 - Failed
                 - Aborted
                 type: string
+              startedAt:
+                description: StartedAt is when execution began; maxDuration is measured
+                  from here.
+                format: date-time
+                type: string
+              steps:
+                description: Steps mirrors spec.steps one-to-one once execution has
+                  started.
+                items:
+                  description: StepStatus records what happened in one step.
+                  properties:
+                    finishedAt:
+                      format: date-time
+                      type: string
+                    injectedAt:
+                      description: InjectedAt is when the destructive action was issued.
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 512
+                      type: string
+                    phase:
+                      description: StepPhase is the progress of one step.
+                      enum:
+                      - Pending
+                      - Running
+                      - Injecting
+                      - Observing
+                      - Succeeded
+                      - Failed
+                      - Skipped
+                      type: string
+                    readyBefore:
+                      description: ReadyBefore is the number of Ready pods matching
+                        the selector before injection.
+                      format: int32
+                      type: integer
+                    recoveryMillis:
+                      description: RecoveryMillis is the time from injection until
+                        ReadyBefore pods were Ready again.
+                      format: int64
+                      type: integer
+                    startedAt:
+                      format: date-time
+                      type: string
+                    targets:
+                      description: Targets are the exact pods chosen for a fault step
+                        (recorded before injection).
+                      items:
+                        description: PodRef identifies one pod precisely (UID guards
+                          against same-name replacements).
+                        properties:
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          uid:
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        - uid
+                        type: object
+                      maxItems: 10
+                      type: array
+                    waitUntil:
+                      description: WaitUntil is the end of a wait step.
+                      format: date-time
+                      type: string
+                  required:
+                  - phase
+                  type: object
+                maxItems: 20
+                type: array
             type: object
         required:
         - spec
