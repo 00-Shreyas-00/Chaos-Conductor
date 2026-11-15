@@ -1,0 +1,12 @@
+{{- include "kubechaos-operator.validateIdentity" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubechaos-cluster-identity
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+immutable: true
+data:
+  clusterID: {{ .Values.clusterIdentity.clusterID | quote }}
+  environment: {{ .Values.clusterIdentity.environment | quote }}

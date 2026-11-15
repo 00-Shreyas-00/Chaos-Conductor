@@ -1,0 +1,61 @@
+{{- include "kubechaos-operator.validateIdentity" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubechaos-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubechaos-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubechaos-operator.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the identity changes (the ConfigMap is immutable; Helm replaces it).
+        checksum/identity: {{ .Values.clusterIdentity | toJson | sha256sum }}
+    spec:
+      serviceAccountName: kubechaos-operator
+      automountServiceAccountToken: true   # needed to talk to the API server; token is projected and short-lived
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: {{ include "kubechaos-operator.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: KUBECHAOS_OPERATOR_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 15

@@ -1,0 +1,27 @@
+# Cluster identity (required). Written into the kubechaos-cluster-identity ConfigMap, which is
+# the only ConfigMap the operator can read. Invalid values fail `helm install` and, if edited
+# in-cluster afterwards, make the operator refuse to start (fail closed).
+clusterIdentity:
+  clusterID: ""          # DNS-1123 label, e.g. dev-kind-01
+  environment: ""        # development | staging | production
+
+image:
+  repository: kubechaos-operator
+  tag: dev
+  # Prefer a digest outside development; when set it overrides tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 256Mi }
+
+networkPolicy:
+  enabled: true
+  # Egress destinations allowed (API server only). List BOTH the `kubernetes` Service IP and
+  # the real API-server endpoint IPs (/32 each): depending on the CNI, NetworkPolicy sees the
+  # address before or after Service NAT. Empty = ports only, i.e. ANY host on these ports is
+  # reachable (verified in kind) — accepted only outside production; the chart refuses to
+  # install in production with an empty list.
+  apiServerCIDRs: []
+  apiServerPorts: [443, 6443]

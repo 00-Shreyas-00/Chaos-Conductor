@@ -1,0 +1,13 @@
+# The operator's namespace. Created by cluster administrators, not by the Helm chart, so the
+# Pod Security Admission labels are part of reviewed configuration.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubechaos-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    # Never a chaos target (architecture §7: protected namespaces).
+    chaos.kubechaos.io/protected: "true"

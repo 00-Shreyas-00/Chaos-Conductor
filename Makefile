@@ -50,7 +50,13 @@ kind-up: ## Create the kind cluster if absent
 	else \
 	  kind create cluster --config deploy/kind/kind-config.yaml --wait 120s; \
 	fi
-	kubectl --context kind-$(KIND_CLUSTER) wait --for=condition=Ready nodes --all --timeout=180s
+	@kubectl --context kind-$(KIND_CLUSTER) wait --for=condition=Ready nodes --all --timeout=180s || { \
+	  echo "Nodes not Ready. After a devcontainer/Docker restart kind nodes can come back with duplicate IPs;"; \
+	  echo "recreate the cluster with: make kind-down kind-up  (then redeploy: make operator-image operator-deploy)"; exit 1; }
+	@dups=$$(kubectl --context kind-$(KIND_CLUSTER) get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' | sort | uniq -d); \
+	if [ -n "$$dups" ]; then \
+	  echo "kind nodes share IP(s) $$dups (happens after a Docker restart); Ready status is stale and networking is broken."; \
+	  echo "recreate the cluster with: make kind-down kind-up  (then redeploy: make operator-image operator-deploy)"; exit 1; fi
 	kubectl --context kind-$(KIND_CLUSTER) get nodes
 
 .PHONY: kind-down
@@ -99,6 +105,57 @@ sessions-revoke: env ## Break-glass: revoke sessions, e.g. make sessions-revoke 
 .PHONY: api
 api: env ## Run the control plane API on :8080 inside the devcontainer (reachable by Keycloak for back-channel logout)
 	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api serve
+
+## ---------- operator ----------
+
+OPERATOR_IMAGE   := kubechaos-operator:dev
+OPERATOR_CHART   := deploy/helm/kubechaos-operator
+OPERATOR_VALUES  := --set clusterIdentity.clusterID=dev-kind-01 --set clusterIdentity.environment=development
+KUBECTL          := kubectl --context kind-$(KIND_CLUSTER)
+
+.PHONY: operator-test
+operator-test: ## Run operator unit tests
+	go vet ./operator/...
+	go test -count=1 ./operator/...
+
+.PHONY: operator-image
+operator-image: ## Build the operator image and load it into kind
+	docker build -f operator/Dockerfile -t $(OPERATOR_IMAGE) --build-arg VERSION=$$(git rev-parse --short HEAD 2>/dev/null || echo dev) .
+	kind load docker-image $(OPERATOR_IMAGE) --name $(KIND_CLUSTER)
+
+.PHONY: operator-deploy
+operator-deploy: ## Deploy the operator into kind (namespace with Pod Security labels, then the chart)
+	$(KUBECTL) apply -f deploy/k8s/namespace.yaml
+	@# Pin NetworkPolicy egress to the API server: Service IP and real endpoint, discovered live.
+	@svc=$$($(KUBECTL) get svc kubernetes -o jsonpath='{.spec.clusterIP}'); \
+	ep=$$($(KUBECTL) get endpointslices -l kubernetes.io/service-name=kubernetes -o jsonpath='{.items[0].endpoints[0].addresses[0]}'); \
+	[ -n "$$svc" ] && [ -n "$$ep" ] || { echo "could not discover API server addresses"; exit 1; }; \
+	echo "NetworkPolicy egress pinned to $$svc/32 and $$ep/32"; \
+	helm --kube-context kind-$(KIND_CLUSTER) upgrade --install kubechaos-operator $(OPERATOR_CHART) \
+	  -n kubechaos-system $(OPERATOR_VALUES) --set "networkPolicy.apiServerCIDRs={$$svc/32,$$ep/32}" --wait --timeout 120s
+	$(KUBECTL) -n kubechaos-system rollout restart deployment/kubechaos-operator
+	$(KUBECTL) -n kubechaos-system rollout status deployment/kubechaos-operator --timeout 120s
+
+.PHONY: operator-undeploy
+operator-undeploy: ## Remove the operator from kind
+	-helm --kube-context kind-$(KIND_CLUSTER) uninstall kubechaos-operator -n kubechaos-system
+
+.PHONY: operator-verify
+operator-verify: ## Check the deployed operator's effective RBAC against expectations
+	@bash scripts/verify-operator-rbac.sh
+
+RBAC_SNAPSHOT := $(OPERATOR_CHART)/rbac.snapshot.yaml
+rbac_render = helm template kubechaos-operator $(OPERATOR_CHART) -n kubechaos-system $(OPERATOR_VALUES) \
+	| awk 'BEGIN{RS="---\n"} /\nkind: (Cluster)?Role(Binding)?\n|^kind: (Cluster)?Role(Binding)?\n/ {printf "---\n%s", $$0}' \
+	| grep -vE '^\s+(app.kubernetes.io/(version|managed-by)|helm.sh/chart):'
+
+.PHONY: rbac-check
+rbac-check: ## Fail if the operator's rendered RBAC differs from the reviewed snapshot
+	@$(rbac_render) | diff -u $(RBAC_SNAPSHOT) - && echo "RBAC matches $(RBAC_SNAPSHOT)"
+
+.PHONY: rbac-snapshot
+rbac-snapshot: ## Re-record the RBAC snapshot (review the diff before committing!)
+	@$(rbac_render) > $(RBAC_SNAPSHOT) && echo "wrote $(RBAC_SNAPSHOT)"
 
 ## ---------- frontend ----------
 

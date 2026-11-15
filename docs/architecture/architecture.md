@@ -342,6 +342,34 @@ No `nodes`, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, no
 cluster-wide `delete`. Later primitives add rules only when they are introduced,
 each documented in this table.
 
+**As implemented (foundation step 10).** Only namespace-scoped rules in
+`kubechaos-system`, with no ClusterRole at all yet:
+
+| Resource | Verbs | Restriction |
+|----------|-------|-------------|
+| `configmaps` | get | `resourceNames: [kubechaos-cluster-identity]`, no list/watch (read uncached) |
+| `coordination.k8s.io/leases` | create; get, update | get/update limited to `kubechaos-operator.chaos.kubechaos.io` |
+| `events`, `events.k8s.io/events` | create, patch | own namespace |
+
+Enforcement around it:
+- `deploy/helm/kubechaos-operator/rbac.snapshot.yaml` and `make rbac-check`: any RBAC change
+  is a reviewed diff.
+- `make operator-verify` asserts the live ServiceAccount's allow/deny matrix with
+  `kubectl auth can-i`.
+- The cluster identity ConfigMap is `immutable`. Re-labelling a cluster (for example
+  production → development) requires deleting and recreating it, which the operator
+  cannot do. The operator refuses to start on a missing or invalid identity.
+- The pod runs as UID 65532 on distroless with a read-only root filesystem, all
+  capabilities dropped, seccomp `RuntimeDefault`, in a namespace enforcing Pod Security
+  `restricted`.
+- A NetworkPolicy denies all ingress and allows egress only to the API server:
+  ports 443/6443 and destination IPs `networkPolicy.apiServerCIDRs`, which lists both the
+  Service IP and the real endpoint. Verified in kind, where kindnet enforces policy. With no
+  CIDRs the policy limits only ports, and a probe pod could then reach `1.1.1.1:443`. That
+  is why `make operator-deploy` pins the CIDRs and the chart refuses a production install
+  without them.
+- Metrics are disabled until they can be served authenticated (TokenReview/SAR).
+
 ### Control-plane RBAC (dev CRD mode)
 
 | Scope | Resource | Verbs |

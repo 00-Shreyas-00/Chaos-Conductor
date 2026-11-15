@@ -1,0 +1,9 @@
+# Keep build contexts small and free of secrets.
+.git
+.env
+**/node_modules
+**/dist
+**/.angular
+frontend
+docs
+*.md

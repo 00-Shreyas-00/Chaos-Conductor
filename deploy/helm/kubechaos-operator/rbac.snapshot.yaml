@@ -1,0 +1,52 @@
+---
+# Source: kubechaos-operator/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubechaos-operator
+  namespace: kubechaos-system
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+rules:
+  # Cluster identity: read exactly one named ConfigMap. No list/watch.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["kubechaos-cluster-identity"]
+    verbs: ["get"]
+  # Leader election. `create` cannot be restricted by resourceNames; the rest is.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["kubechaos-operator.chaos.kubechaos.io"]
+    verbs: ["get", "update"]
+  # Leader-election events (and, later, experiment timeline events) in its own namespace.
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+# Source: kubechaos-operator/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubechaos-operator
+  namespace: kubechaos-system
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubechaos-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: kubechaos-system
+
