@@ -288,6 +288,30 @@ never cluster-wide.
   no result, it does **not** retry. It marks the step `Unknown` and moves to Aborting.
 - CRs are garbage-collected after a TTL (default 24 h) once terminal. History lives in the DB.
 
+**As implemented (foundation step 11): `ChaosExperiment` v1alpha1.**
+- Types live in the shared module `pkg/chaosapi` (`api/v1alpha1`). The CRD
+  (`deploy/crds/`) is generated from them by controller-gen, pinned in the separate
+  `tools/` module. `make generate-check` fails if generated files drift.
+- **The API server enforces the contract, so no webhook is needed and none can be down:**
+  - The only fault type is `PodKill`, with typed `podKill` parameters: `count` 1–10,
+    `gracePeriodSeconds` 0–300 (default 30).
+  - 1–20 steps, each exactly one of `fault` or `wait`. Waits are 1 s–10 min and
+    `maxDuration` is 10 s–1 h.
+  - The target is one namespace plus a non-empty equality selector (at most 10 labels,
+    keys and values validated). Protected namespaces are refused in the schema.
+  - `spec` is immutable after creation. `spec.cancel` may only go `false → true`.
+  - A **ValidatingAdmissionPolicy** confines ChaosExperiments to `kubechaos-system`.
+  - Unknown fields are *pruned* by the API server unless the client requests strict field
+    validation. `kubectl` does this by default, and **the control plane must create CRs
+    with `fieldValidation=Strict`**.
+- **The operator re-validates everything in Go** (`ValidateSpec`) before acting, and also
+  requires the total wait time to fit inside `maxDuration`. It records its decision in
+  `status`: `Pending` (validated; no execution engine yet), `Rejected` (`WrongNamespace`,
+  `ClusterMismatch`, `InvalidSpec`) or `Aborted` (cancelled). Terminal phases are sticky.
+- Operator RBAC adds only `get/list/watch` on `chaosexperiments` and `get/update/patch` on
+  `chaosexperiments/status`. It cannot create, modify or delete experiments.
+- `make crd-verify` checks all of this against the live cluster (29 checks).
+
 ---
 
 ## 7. Operator architecture
@@ -350,6 +374,8 @@ each documented in this table.
 | `configmaps` | get | `resourceNames: [kubechaos-cluster-identity]`, no list/watch (read uncached) |
 | `coordination.k8s.io/leases` | create; get, update | get/update limited to `kubechaos-operator.chaos.kubechaos.io` |
 | `events`, `events.k8s.io/events` | create, patch | own namespace |
+| `chaos.kubechaos.io/chaosexperiments` | get, list, watch | own namespace (step 11) |
+| `chaos.kubechaos.io/chaosexperiments/status` | get, update, patch | own namespace (step 11) |
 
 Enforcement around it:
 - `deploy/helm/kubechaos-operator/rbac.snapshot.yaml` and `make rbac-check`: any RBAC change

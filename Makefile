@@ -106,6 +106,26 @@ sessions-revoke: env ## Break-glass: revoke sessions, e.g. make sessions-revoke 
 api: env ## Run the control plane API on :8080 inside the devcontainer (reachable by Keycloak for back-channel logout)
 	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api serve
 
+## ---------- API types / CRDs ----------
+
+# Code generators are pinned in tools/go.mod (separate module: shipped modules stay lean).
+CONTROLLER_GEN := bin/controller-gen
+$(CONTROLLER_GEN): tools/go.mod tools/go.sum
+	cd tools && GOWORK=off go build -o ../$(CONTROLLER_GEN) sigs.k8s.io/controller-tools/cmd/controller-gen
+
+.PHONY: generate
+generate: $(CONTROLLER_GEN) ## Regenerate deepcopy code and CRD manifests from pkg/chaosapi types
+	cd pkg/chaosapi && ../../$(CONTROLLER_GEN) object paths=./...
+	cd pkg/chaosapi && ../../$(CONTROLLER_GEN) crd paths=./... output:crd:artifacts:config=../../deploy/crds
+
+.PHONY: generate-check
+generate-check: generate ## Fail if generated code/CRDs are out of date
+	@git diff --exit-code -- pkg/chaosapi deploy/crds && echo "generated files are up to date"
+
+.PHONY: crds-install
+crds-install: ## Install CRDs and admission policies (cluster-admin action)
+	$(KUBECTL) apply --server-side -f deploy/crds/
+
 ## ---------- operator ----------
 
 OPERATOR_IMAGE   := kubechaos-operator:dev
@@ -124,7 +144,7 @@ operator-image: ## Build the operator image and load it into kind
 	kind load docker-image $(OPERATOR_IMAGE) --name $(KIND_CLUSTER)
 
 .PHONY: operator-deploy
-operator-deploy: ## Deploy the operator into kind (namespace with Pod Security labels, then the chart)
+operator-deploy: crds-install ## Deploy the operator into kind (CRDs, namespace with Pod Security labels, chart)
 	$(KUBECTL) apply -f deploy/k8s/namespace.yaml
 	@# Pin NetworkPolicy egress to the API server: Service IP and real endpoint, discovered live.
 	@svc=$$($(KUBECTL) get svc kubernetes -o jsonpath='{.spec.clusterIP}'); \
@@ -143,6 +163,10 @@ operator-undeploy: ## Remove the operator from kind
 .PHONY: operator-verify
 operator-verify: ## Check the deployed operator's effective RBAC against expectations
 	@bash scripts/verify-operator-rbac.sh
+
+.PHONY: crd-verify
+crd-verify: ## Check ChaosExperiment validation, immutability and admission policy against kind
+	@bash scripts/verify-crd.sh
 
 RBAC_SNAPSHOT := $(OPERATOR_CHART)/rbac.snapshot.yaml
 rbac_render = helm template kubechaos-operator $(OPERATOR_CHART) -n kubechaos-system $(OPERATOR_VALUES) \

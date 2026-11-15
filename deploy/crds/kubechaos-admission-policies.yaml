@@ -1,0 +1,26 @@
+# In-API-server admission policies (no webhook: nothing can be down, nothing to bypass).
+# Installed by cluster administrators together with the CRDs (`make crds-install`).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubechaos-experiments-namespace
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["chaos.kubechaos.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["chaosexperiments"]
+  validations:
+    - expression: "object.metadata.namespace == 'kubechaos-system'"
+      message: "ChaosExperiments may only exist in namespace kubechaos-system"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubechaos-experiments-namespace
+spec:
+  policyName: kubechaos-experiments-namespace
+  validationActions: ["Deny"]

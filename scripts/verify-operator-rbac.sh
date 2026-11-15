@@ -24,6 +24,20 @@ check yes get configmaps/kubechaos-cluster-identity -n "$NS"
 check yes create leases.coordination.k8s.io -n "$NS"
 check yes update leases.coordination.k8s.io/kubechaos-operator.chaos.kubechaos.io -n "$NS"
 check yes create events -n "$NS"
+check yes list chaosexperiments.chaos.kubechaos.io -n "$NS"
+check yes watch chaosexperiments.chaos.kubechaos.io -n "$NS"
+check yes update chaosexperiments.chaos.kubechaos.io --subresource=status -n "$NS"
+
+echo "Must be denied (experiments: status only, own namespace only):"
+check no  create chaosexperiments.chaos.kubechaos.io -n "$NS"
+check no  update chaosexperiments.chaos.kubechaos.io -n "$NS"
+check no  patch chaosexperiments.chaos.kubechaos.io -n "$NS"
+check no  delete chaosexperiments.chaos.kubechaos.io -n "$NS"
+check no  update chaosexperiments.chaos.kubechaos.io --subresource=finalizers -n "$NS"
+check no  list chaosexperiments.chaos.kubechaos.io -n default
+check no  list chaosexperiments.chaos.kubechaos.io -A
+check no  update customresourcedefinitions.apiextensions.k8s.io
+check no  delete validatingadmissionpolicies.admissionregistration.k8s.io
 
 echo "Must be denied (foundation step 10 — no workload access yet):"
 check no  get configmaps/other -n "$NS"

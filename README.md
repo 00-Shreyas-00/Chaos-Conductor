@@ -7,14 +7,18 @@ acts on Kubernetes. There is no shell and no `kubectl` passthrough.
 **Status:** foundation phase. Done: architecture, dev environment, minimal Angular SPA,
 minimal Go API (deny-by-default), PostgreSQL migrations with append-only audit table,
 Keycloak/OIDC login (backend-for-frontend, server-side sessions, CSRF), minimal hardened
-Kubernetes operator (identity, leader election, least-privilege RBAC, NetworkPolicy).
-Next: first CRD.
+Kubernetes operator (identity, leader election, least-privilege RBAC, NetworkPolicy),
+`ChaosExperiment` CRD with API-server-enforced validation and an operator that validates
+and records decisions (no execution yet).
+Next: first experiment primitive, PodKill.
 
 ### Operator (kind)
 ```bash
 make operator-image operator-deploy   # build distroless image, load into kind, install chart
 make operator-verify                  # assert effective RBAC (kubectl auth can-i matrix)
 make rbac-check                       # rendered RBAC must equal the reviewed snapshot
+make crd-verify                       # ChaosExperiment validation/immutability/admission, live
+make generate                         # regenerate deepcopy + CRD from pkg/chaosapi types
 ```
 The operator reads its cluster identity from the immutable ConfigMap
 `kubechaos-system/kubechaos-cluster-identity` (Helm values `clusterIdentity.*`) and refuses

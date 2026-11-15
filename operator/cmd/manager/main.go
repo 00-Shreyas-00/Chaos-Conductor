@@ -22,6 +22,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	chaosv1 "github.com/kubechaos/kubechaos/pkg/chaosapi/api/v1alpha1"
+
+	"github.com/kubechaos/kubechaos/operator/internal/controller"
 	"github.com/kubechaos/kubechaos/operator/internal/identity"
 )
 
@@ -59,6 +62,9 @@ func run(ctx context.Context, log logr.Logger) error {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err
 	}
+	if err := chaosv1.AddToScheme(scheme); err != nil {
+		return err
+	}
 
 	var identityLoaded atomic.Bool
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
@@ -87,6 +93,12 @@ func run(ctx context.Context, log logr.Logger) error {
 	}
 	identityLoaded.Store(true)
 	log.Info("cluster identity loaded", "clusterID", id.ClusterID, "environment", string(id.Environment), "namespace", ns)
+
+	if err := (&controller.ExperimentReconciler{
+		Client: mgr.GetClient(), Identity: id, Namespace: ns,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setup chaosexperiment controller: %w", err)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err

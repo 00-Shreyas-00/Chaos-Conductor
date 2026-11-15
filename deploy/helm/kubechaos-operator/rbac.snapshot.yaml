@@ -28,6 +28,14 @@ rules:
   - apiGroups: ["", "events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # Step 11: read experiment requests; write ONLY their status. The operator can never create,
+  # change or delete an experiment (the control plane requests, cluster admins own policy).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaosexperiments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaosexperiments/status"]
+    verbs: ["get", "update", "patch"]
 
 ---
 # Source: kubechaos-operator/templates/rbac.yaml
