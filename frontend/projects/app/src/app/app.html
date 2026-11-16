@@ -2,6 +2,15 @@
   <span class="brand">KubeChaos</span>
   <nav>
     <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Overview</a>
+    @if (has('viewer', 'experimenter', 'approver', 'admin')) {
+      <a mat-button routerLink="/experiments" routerLinkActive="active" data-testid="nav-experiments">Experiments</a>
+    }
+    @if (has('admin')) {
+      <a mat-button routerLink="/admin" routerLinkActive="active" data-testid="nav-admin">Emergency stop</a>
+    }
+    @if (has('auditor')) {
+      <a mat-button routerLink="/audit" routerLinkActive="active" data-testid="nav-audit">Audit</a>
+    }
   </nav>
   <span class="spacer"></span>
   @switch (auth.state()) {
@@ -17,6 +26,12 @@
     }
   }
 </mat-toolbar>
+
+@if (locked()) {
+  <div class="lock-banner" role="alert" data-testid="lock-banner">
+    Emergency stop engaged — no experiments can run.
+  </div>
+}
 
 <main class="content">
   <router-outlet />

@@ -1,0 +1,65 @@
+<a routerLink="/experiments">← Experiments</a>
+@if (error()) {
+  <p class="error" role="alert">{{ error() }}</p>
+}
+@if (experiment(); as e) {
+  <div class="header">
+    <h1>{{ e.name }}</h1>
+    <span class="phase" [attr.data-phase]="e.phase" data-testid="phase">{{ e.phase || e.state }}</span>
+    @if (live()) { <span class="live" data-testid="live">● live</span> }
+    <span class="spacer"></span>
+    @if (canCancel()) {
+      <button mat-stroked-button type="button" (click)="cancel()" data-testid="cancel">Cancel experiment</button>
+    }
+    @if (e.cancelRequested && !terminal()) { <span data-testid="cancelling">Cancelling…</span> }
+  </div>
+  <p class="meta">
+    {{ e.description || 'No description' }} · requested by {{ e.requesterName || e.requesterSubject }} ·
+    risk {{ e.risk }} · cluster {{ e.clusterId }} · max {{ e.spec.maxDuration }}
+  </p>
+  @if (e.status?.message) { <p class="message">{{ e.status?.message }}</p> }
+
+  @if (e.status?.score !== undefined && e.status?.score !== null) {
+    <mat-card appearance="outlined" class="score" data-testid="score">
+      <mat-card-content>
+        <div class="score-line"><strong>{{ e.status?.result }}</strong> · Resilience score {{ e.status?.score }}/100</div>
+        <table class="criteria">
+          <tr><th>Metric</th><th>Expected</th><th>Observed</th><th></th></tr>
+          @for (c of e.status?.criteria ?? []; track $index) {
+            <tr>
+              <td>{{ c.metric }}</td>
+              <td>{{ c.operator }} {{ c.expected }}</td>
+              <td>{{ c.observed || '—' }}</td>
+              <td [class.pass]="c.passed" [class.fail]="!c.passed">{{ c.passed ? 'PASS' : 'FAIL' }}{{ c.message ? ' — ' + c.message : '' }}</td>
+            </tr>
+          }
+        </table>
+      </mat-card-content>
+    </mat-card>
+  }
+
+  <h2>Steps</h2>
+  <ol class="steps">
+    @for (s of e.spec.steps; track $index; let i = $index) {
+      <li>
+        @if (s.fault) {
+          PodKill {{ s.fault.podKill?.count }} pod(s) in {{ s.fault.target.namespace }} matching
+          <code>{{ selectorText(s.fault.target.selector) }}</code>
+        } @else {
+          Wait {{ s.wait?.duration }}
+        }
+        — <em>{{ e.status?.steps?.[i]?.phase || 'Pending' }}</em>
+        @if (e.status?.steps?.[i]?.recoveryMillis !== undefined) { · recovered in {{ e.status?.steps?.[i]?.recoveryMillis }} ms }
+      </li>
+    }
+  </ol>
+
+  <h2>Timeline</h2>
+  <ul class="timeline" data-testid="timeline">
+    @for (t of timeline(); track t.id) {
+      <li><time>{{ t.occurredAt | date: 'HH:mm:ss' }}</time> <span class="type">{{ t.type }}</span> {{ t.message }}</li>
+    } @empty {
+      <li>No events yet.</li>
+    }
+  </ul>
+}

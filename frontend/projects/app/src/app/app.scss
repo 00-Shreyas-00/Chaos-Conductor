@@ -28,6 +28,14 @@
   background: var(--mat-sys-secondary-container);
 }
 
+.lock-banner {
+  padding: 8px 16px;
+  background: var(--mat-sys-error-container);
+  color: var(--mat-sys-on-error-container);
+  font-weight: 600;
+  text-align: center;
+}
+
 .content {
   max-width: 1200px;
   margin: 0 auto;

@@ -1,0 +1,18 @@
+.header { display: flex; align-items: center; gap: 12px; }
+.spacer { flex: 1 1 auto; }
+.meta, .message { color: var(--mat-sys-on-surface-variant); }
+.error { color: var(--mat-sys-error); }
+.live { color: var(--mat-sys-primary); font: var(--mat-sys-label-medium); }
+.phase { font: var(--mat-sys-title-medium); }
+.phase[data-phase='Completed'] { color: var(--mat-sys-primary); }
+.phase[data-phase='Failed'], .phase[data-phase='Rejected'], .phase[data-phase='Aborted'] { color: var(--mat-sys-error); }
+.score { margin: 12px 0; }
+.score-line { font: var(--mat-sys-title-medium); margin-bottom: 8px; }
+.criteria { border-collapse: collapse; width: 100%; }
+.criteria th, .criteria td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--mat-sys-outline-variant); }
+.pass { color: var(--mat-sys-primary); font-weight: 600; }
+.fail { color: var(--mat-sys-error); font-weight: 600; }
+.timeline { list-style: none; padding: 0; font-family: ui-monospace, monospace; }
+.timeline li { padding: 2px 0; }
+.timeline time { color: var(--mat-sys-on-surface-variant); margin-right: 8px; }
+.timeline .type { display: inline-block; min-width: 130px; font-weight: 600; }

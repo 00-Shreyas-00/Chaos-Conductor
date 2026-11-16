@@ -1,0 +1,137 @@
+<h1>New experiment</h1>
+
+@if (cluster(); as c) {
+  <mat-card appearance="outlined" class="policy" data-testid="policy">
+    <mat-card-content>
+      <strong>Cluster {{ c.id }}</strong> · {{ c.environment || 'no policy' }}
+      @if (c.locked) { <span class="locked">· EMERGENCY STOP ENGAGED</span> }
+      @if (c.policy; as p) {
+        <div class="hint">
+          Allowed: {{ p.allowedFaults.join(', ') }} in {{ p.allowedNamespaces.join(', ') || 'no namespaces' }} ·
+          max {{ p.limits.maxPodKillCount }} pod(s) per kill · max duration {{ p.limits.maxDuration }} ·
+          approval: {{ p.approvalRequired }}
+        </div>
+      } @else {
+        <div class="hint">No ChaosPolicy is installed: nothing can run on this cluster.</div>
+      }
+    </mat-card-content>
+  </mat-card>
+}
+
+<form [formGroup]="form" (ngSubmit)="submit()" class="form">
+  @if (scenarios().length) {
+    <mat-form-field appearance="outline">
+      <mat-label>Start from a scenario</mat-label>
+      <mat-select (selectionChange)="applyScenario($event.value)" data-testid="scenario">
+        @for (s of scenarios(); track s.id) {
+          <mat-option [value]="s.id">{{ s.name }}</mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+  }
+
+  <mat-form-field appearance="outline">
+    <mat-label>Description</mat-label>
+    <input matInput formControlName="description" maxlength="500" />
+  </mat-form-field>
+
+  <mat-form-field appearance="outline">
+    <mat-label>Maximum duration (hard limit)</mat-label>
+    <input matInput formControlName="maxDuration" placeholder="3m" data-testid="maxDuration" />
+    <mat-hint>e.g. 90s, 3m, 1h30m — the operator aborts after this</mat-hint>
+  </mat-form-field>
+
+  <h2>Steps</h2>
+  <div formArrayName="steps">
+    @for (s of steps.controls; track $index; let i = $index) {
+      <mat-card appearance="outlined" class="step" [formGroupName]="i">
+        <mat-card-content>
+          <div class="step-title">Step {{ i + 1 }}: {{ s.controls.kind.value === 'fault' ? 'PodKill' : 'Wait' }}
+            <button mat-button type="button" (click)="removeStep(i)">Remove</button>
+          </div>
+          @if (s.controls.kind.value === 'fault') {
+            <div class="row">
+              <mat-form-field appearance="outline">
+                <mat-label>Namespace</mat-label>
+                <input matInput formControlName="namespace" data-testid="namespace" />
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="grow">
+                <mat-label>Label selector</mat-label>
+                <input matInput formControlName="selector" placeholder="app=web" data-testid="selector" />
+                @if (s.controls.selector.invalid) { <mat-error>Use key=value pairs separated by commas (1–10)</mat-error> }
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="narrow">
+                <mat-label>Pods to kill</mat-label>
+                <input matInput type="number" formControlName="count" min="1" max="10" data-testid="count" />
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="narrow">
+                <mat-label>Grace (s)</mat-label>
+                <input matInput type="number" formControlName="grace" min="0" max="300" />
+              </mat-form-field>
+            </div>
+          } @else {
+            <mat-form-field appearance="outline">
+              <mat-label>Wait duration</mat-label>
+              <input matInput formControlName="duration" placeholder="30s" />
+            </mat-form-field>
+          }
+        </mat-card-content>
+      </mat-card>
+    }
+  </div>
+  <div class="actions">
+    <button mat-stroked-button type="button" (click)="addFault()">Add PodKill</button>
+    <button mat-stroked-button type="button" (click)="addWait()">Add wait</button>
+  </div>
+
+  <h2>Success criteria</h2>
+  <div formArrayName="criteria">
+    @for (c of criteria.controls; track $index; let i = $index) {
+      <div class="row" [formGroupName]="i">
+        <mat-form-field appearance="outline">
+          <mat-label>Metric</mat-label>
+          <mat-select formControlName="metric">
+            @for (m of metrics; track m) { <mat-option [value]="m">{{ m }}</mat-option> }
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="narrow">
+          <mat-label>Operator</mat-label>
+          <mat-select formControlName="operator">
+            @for (o of operators; track o) { <mat-option [value]="o">{{ o }}</mat-option> }
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="narrow">
+          <mat-label>Value</mat-label>
+          <input matInput formControlName="value" placeholder="3 or 30s" />
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="narrow">
+          <mat-label>Weight</mat-label>
+          <input matInput type="number" formControlName="weight" min="1" max="100" />
+        </mat-form-field>
+        <button mat-button type="button" (click)="removeCriterion(i)">Remove</button>
+      </div>
+    }
+  </div>
+  <div class="actions">
+    <button mat-stroked-button type="button" (click)="addCriterion()">Add criterion</button>
+  </div>
+
+  <h2>Confirm</h2>
+  <p>This will delete real pods. Type the target namespace(s) <code>{{ targetNamespaces().join(',') }}</code> to confirm.</p>
+  <mat-form-field appearance="outline">
+    <mat-label>Confirmation</mat-label>
+    <input matInput formControlName="confirmation" autocomplete="off" data-testid="confirmation" />
+  </mat-form-field>
+
+  @if (problem(); as p) {
+    <div class="problem" role="alert" data-testid="problem">
+      <strong>{{ p.title }}</strong>
+      @for (r of p.reasons ?? []; track r) { <div>{{ r }}</div> }
+      @if (p.code === 'step_up_required') {
+        <button mat-flat-button type="button" (click)="reauthenticate()" data-testid="stepup">Sign in again to confirm</button>
+      }
+    </div>
+  }
+
+  <button mat-flat-button type="submit" [disabled]="submitting() || !confirmationMatches()" data-testid="submit">Run experiment</button>
+</form>
