@@ -46,6 +46,43 @@ rules:
     resources: ["chaosexperiments/status"]
     verbs: ["get", "update", "patch"]
 ---
+# Cluster-scoped KubeChaos objects. Read-only except recording attestation use.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubechaos-operator
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+rules:
+  # The one cluster policy, read-only (cluster admins own it).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaospolicies"]
+    resourceNames: ["default"]
+    verbs: ["get"]
+  # Emergency-stop locks: observe only. Never create or delete.
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaoslocks"]
+    verbs: ["get", "list", "watch"]
+  # Single-use approval attestations: create only (AlreadyExists = replay).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaosattestationuses"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubechaos-operator
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubechaos-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: {{ .Release.Namespace }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

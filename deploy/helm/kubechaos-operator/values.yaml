@@ -11,6 +11,10 @@ clusterIdentity:
 chaosTargets:
   namespaces: []
 
+# Create the control plane's ServiceAccount and narrow RBAC (CRD connector).
+controlPlane:
+  enabled: true
+
 image:
   repository: kubechaos-operator
   tag: dev

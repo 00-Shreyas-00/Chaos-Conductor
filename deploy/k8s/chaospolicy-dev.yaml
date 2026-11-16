@@ -1,0 +1,17 @@
+# The development cluster's ChaosPolicy (cluster-admin owned; the operator and control plane
+# can only read it). Without a ChaosPolicy named "default", nothing executes.
+apiVersion: chaos.kubechaos.io/v1alpha1
+kind: ChaosPolicy
+metadata:
+  name: default
+spec:
+  environment: development
+  allowedFaults: [PodKill]
+  allowedNamespaces: [demo]
+  limits:
+    maxPodKillCount: 2
+    maxDuration: 10m
+    maxConcurrentExperiments: 2
+    minReadyReplicas: 1
+  approval:
+    required: Never

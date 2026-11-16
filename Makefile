@@ -153,6 +153,7 @@ demo-deploy: ## Deploy the demo workloads (namespace demo, opted in) used by Pod
 
 operator-deploy: crds-install demo-deploy ## Deploy the operator into kind (CRDs, demo ns, namespace with Pod Security labels, chart)
 	$(KUBECTL) apply -f deploy/k8s/namespace.yaml
+	$(KUBECTL) apply --server-side -f deploy/k8s/chaospolicy-dev.yaml
 	@# Pin NetworkPolicy egress to the API server: Service IP and real endpoint, discovered live.
 	@svc=$$($(KUBECTL) get svc kubernetes -o jsonpath='{.spec.clusterIP}'); \
 	ep=$$($(KUBECTL) get endpointslices -l kubernetes.io/service-name=kubernetes -o jsonpath='{.items[0].endpoints[0].addresses[0]}'); \
@@ -174,6 +175,14 @@ operator-verify: ## Check the deployed operator's effective RBAC against expecta
 .PHONY: crd-verify
 crd-verify: ## Check ChaosExperiment validation, immutability and admission policy against kind
 	@bash scripts/verify-crd.sh
+
+.PHONY: kubechaosctl
+kubechaosctl: ## Build the break-glass admin CLI into bin/kubechaosctl
+	go build -o bin/kubechaosctl ./cli/cmd/kubechaosctl
+
+.PHONY: safety-verify
+safety-verify: kubechaosctl ## Live checks: ChaosPolicy enforcement, emergency stop, admission policies
+	@bash scripts/verify-policy-lock.sh
 
 .PHONY: podkill-verify
 podkill-verify: ## Run PodKill scenarios against the demo workloads in kind (deletes demo pods!)

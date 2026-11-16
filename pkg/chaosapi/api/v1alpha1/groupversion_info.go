@@ -23,7 +23,12 @@ var (
 )
 
 func addKnownTypes(s *runtime.Scheme) error {
-	s.AddKnownTypes(GroupVersion, &ChaosExperiment{}, &ChaosExperimentList{})
+	s.AddKnownTypes(GroupVersion,
+		&ChaosExperiment{}, &ChaosExperimentList{},
+		&ChaosPolicy{}, &ChaosPolicyList{},
+		&ChaosLock{}, &ChaosLockList{},
+		&ChaosAttestationUse{}, &ChaosAttestationUseList{},
+	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
 }

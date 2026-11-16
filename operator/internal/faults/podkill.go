@@ -68,7 +68,10 @@ type PodKillPlan struct {
 //     it never silently kills fewer.
 //
 // Selection among eligible pods is uniformly random (crypto/rand).
-func PlanPodKill(ctx context.Context, r client.Reader, f *chaosv1.FaultStep) (PodKillPlan, error) {
+func PlanPodKill(ctx context.Context, r client.Reader, f *chaosv1.FaultStep, minSurvivors int) (PodKillPlan, error) {
+	if minSurvivors < 1 {
+		minSurvivors = 1 // never the last Ready replica, whatever the caller passes
+	}
 	if f == nil || f.Type != chaosv1.FaultPodKill || f.PodKill == nil {
 		return PodKillPlan{}, errors.New("not a PodKill step")
 	}
@@ -110,15 +113,15 @@ func PlanPodKill(ctx context.Context, r client.Reader, f *chaosv1.FaultStep) (Po
 			break
 		}
 		o := controllerUID(&p)
-		if killedPerOwner[o]+1 >= readyPerOwner[o] { // would leave this workload with no Ready pod
+		if readyPerOwner[o]-(killedPerOwner[o]+1) < minSurvivors { // would leave too few Ready pods
 			continue
 		}
 		killedPerOwner[o]++
 		plan.Targets = append(plan.Targets, chaosv1.PodRef{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID)})
 	}
 	if len(plan.Targets) < want {
-		return PodKillPlan{}, fmt.Errorf("%w: requested %d pod(s), but only %d can be killed without leaving a workload with no Ready replica",
-			ErrBlastRadius, want, len(plan.Targets))
+		return PodKillPlan{}, fmt.Errorf("%w: requested %d pod(s), but only %d can be killed while keeping at least %d Ready replica(s) per workload",
+			ErrBlastRadius, want, len(plan.Targets), minSurvivors)
 	}
 	sort.Slice(plan.Targets, func(i, j int) bool { return plan.Targets[i].Name < plan.Targets[j].Name })
 	return plan, nil

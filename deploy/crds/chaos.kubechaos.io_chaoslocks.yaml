@@ -1,0 +1,79 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: chaoslocks.chaos.kubechaos.io
+spec:
+  group: chaos.kubechaos.io
+  names:
+    categories:
+    - kubechaos
+    kind: ChaosLock
+    listKind: ChaosLockList
+    plural: chaoslocks
+    shortNames:
+    - chaoslock
+    singular: chaoslock
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.engagedBy
+      name: EngagedBy
+      type: string
+    - jsonPath: .spec.reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ChaosLock is the emergency stop. While ANY ChaosLock exists, no experiment starts and
+          running experiments are aborted. Creating one is cheap to allow (web UI admins, kubechaosctl);
+          deleting one (unlocking) is reserved for cluster administrators (kubechaosctl unlock).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ChaosLockSpec records why and by whom the system was locked.
+            properties:
+              engagedBy:
+                maxLength: 255
+                minLength: 1
+                type: string
+              reason:
+                maxLength: 512
+                minLength: 1
+                type: string
+            required:
+            - engagedBy
+            - reason
+            type: object
+            x-kubernetes-validations:
+            - message: a ChaosLock is immutable; delete it to unlock
+              rule: self == oldSelf
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

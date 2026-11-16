@@ -59,6 +59,13 @@ func ValidateSpec(s *ChaosExperimentSpec) field.ErrorList {
 			errs = append(errs, validateFault(st.Fault, p.Child("fault"))...)
 		}
 	}
+	crit := root.Child("successCriteria")
+	if len(s.SuccessCriteria) > 10 {
+		errs = append(errs, field.TooMany(crit, len(s.SuccessCriteria), 10))
+	}
+	for i, c := range s.SuccessCriteria {
+		errs = append(errs, validateCriterion(c, crit.Index(i))...)
+	}
 	if len(s.Steps) > 0 && faults == 0 {
 		errs = append(errs, field.Invalid(steps, len(s.Steps), "an experiment must contain at least one fault"))
 	}
@@ -112,6 +119,64 @@ func validateFault(f *FaultStep, p *field.Path) field.ErrorList {
 	default:
 		// Unknown fault type => reject (fail closed), even if the schema were to allow it.
 		errs = append(errs, field.NotSupported(p.Child("type"), f.Type, []FaultType{FaultPodKill}))
+	}
+	return errs
+}
+
+var (
+	numberRe       = regexp.MustCompile(`^[0-9]{1,6}(\.[0-9]{1,3})?$`)
+	shortDurRe     = regexp.MustCompile(`^([0-9]{1,4}(ms|s|m)){1,3}$`)
+	validOperators = []ComparisonOperator{"lt", "le", "gt", "ge", "eq"}
+)
+
+// CriterionValue parses a criterion value: durations in seconds for time metrics, numbers
+// otherwise. It is used by validation and by the evaluator.
+func CriterionValue(c Criterion) (float64, error) {
+	switch c.Metric {
+	case MetricRecoveryTime, MetricHTTPLatencyP99:
+		if !shortDurRe.MatchString(c.Value) {
+			return 0, fmt.Errorf("must be a duration such as 500ms or 30s")
+		}
+		d, err := time.ParseDuration(c.Value)
+		if err != nil || d > time.Hour {
+			return 0, fmt.Errorf("must be a duration up to 1h")
+		}
+		return d.Seconds(), nil
+	default:
+		if !numberRe.MatchString(c.Value) {
+			return 0, fmt.Errorf("must be a number")
+		}
+		var f float64
+		if _, err := fmt.Sscanf(c.Value, "%g", &f); err != nil {
+			return 0, fmt.Errorf("must be a number")
+		}
+		if (c.Metric == MetricReadyRatio || c.Metric == MetricHTTPErrorRate) && f > 100 {
+			return 0, fmt.Errorf("is a percentage (0-100)")
+		}
+		return f, nil
+	}
+}
+
+func validateCriterion(c Criterion, p *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	switch c.Metric {
+	case MetricAvailableReplicas, MetricReadyRatio, MetricRecoveryTime, MetricHTTPErrorRate, MetricHTTPLatencyP99:
+	default:
+		errs = append(errs, field.NotSupported(p.Child("metric"), c.Metric, []MetricName{
+			MetricAvailableReplicas, MetricReadyRatio, MetricRecoveryTime, MetricHTTPErrorRate, MetricHTTPLatencyP99}))
+	}
+	if !slices.Contains(validOperators, c.Operator) {
+		errs = append(errs, field.NotSupported(p.Child("operator"), c.Operator, validOperators))
+	}
+	if _, err := CriterionValue(c); err != nil {
+		errs = append(errs, field.Invalid(p.Child("value"), c.Value, err.Error()))
+	}
+	if c.Weight < 0 || c.Weight > 100 {
+		errs = append(errs, field.Invalid(p.Child("weight"), c.Weight, "must be 1-100"))
+	}
+	if c.Target != nil {
+		// Same rules as fault targets.
+		errs = append(errs, validateFault(&FaultStep{Type: FaultPodKill, Target: *c.Target, PodKill: &PodKillParams{Count: 1}}, p)...)
 	}
 	return errs
 }

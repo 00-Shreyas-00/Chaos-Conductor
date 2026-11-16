@@ -1,0 +1,76 @@
+{{- if .Values.controlPlane.enabled }}
+{{- /*
+  The control plane's identity in this cluster (CRD connector, architecture §7/§11). It can
+  REQUEST experiments and read their status, read the policy, and ENGAGE the emergency stop.
+  It cannot touch workloads, write status, change policy, consume attestations or unlock.
+  spec immutability (CRD CEL) limits `patch` to setting spec.cancel; the approval annotation
+  is immutable after creation (ValidatingAdmissionPolicy).
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubechaos-control-plane
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubechaos-control-plane
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaosexperiments"]
+    verbs: ["create", "get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubechaos-control-plane
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubechaos-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-control-plane
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubechaos-control-plane
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaospolicies"]
+    resourceNames: ["default"]
+    verbs: ["get"]
+  # Engage the emergency stop (create) and see it; never delete (= unlock).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaoslocks"]
+    verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubechaos-control-plane
+  labels:
+    {{- include "kubechaos-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubechaos-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-control-plane
+    namespace: {{ .Release.Namespace }}
+{{- end }}

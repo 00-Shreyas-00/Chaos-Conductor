@@ -53,6 +53,7 @@ reject "missing requestedBy"                  "$(exp r17 $NS "[$KILL]" | sed 's/
 reject "unknown field (strict validation)"    "$(exp r18 $NS "[$KILL]" '"command":"kubectl delete pods --all"')" 'unknown field "spec.command"'
 
 echo "Admission policy:"
+kubectl delete ns kubechaos-crd-test --ignore-not-found --wait=true >/dev/null 2>&1
 kubectl create ns kubechaos-crd-test >/dev/null 2>&1 || true
 reject "experiment outside kubechaos-system"  "$(exp n1 kubechaos-crd-test "[$KILL]")" "may only exist in namespace kubechaos-system"
 kubectl delete ns kubechaos-crd-test --wait=false >/dev/null 2>&1

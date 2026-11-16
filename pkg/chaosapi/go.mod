@@ -2,7 +2,10 @@ module github.com/kubechaos/kubechaos/pkg/chaosapi
 
 go 1.26.0
 
-require k8s.io/apimachinery v0.37.0
+require (
+	github.com/go-jose/go-jose/v4 v4.1.4
+	k8s.io/apimachinery v0.37.0
+)
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect

@@ -15,10 +15,14 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	chaosv1 "github.com/kubechaos/kubechaos/pkg/chaosapi/api/v1alpha1"
+	"github.com/kubechaos/kubechaos/pkg/chaosapi/attestation"
 
+	"github.com/kubechaos/kubechaos/operator/internal/criteria"
 	"github.com/kubechaos/kubechaos/operator/internal/faults"
 	"github.com/kubechaos/kubechaos/operator/internal/identity"
 )
@@ -39,6 +43,12 @@ const (
 	ReasonInterrupted         = "InjectionInterrupted"
 	ReasonMaxDuration         = "MaxDurationExceeded"
 	ReasonInconsistentStatus  = "InconsistentStatus"
+	ReasonSystemLocked        = "SystemLocked"
+	ReasonPolicyUnavailable   = "PolicyUnavailable"
+	ReasonPolicyViolation     = "PolicyViolation"
+	ReasonConcurrencyLimit    = "ConcurrencyLimit"
+	ReasonApprovalRequired    = "ApprovalRequired"
+	ReasonApprovalInvalid     = "ApprovalInvalid"
 )
 
 // observeInterval is how often recovery is checked after an injection.
@@ -65,8 +75,11 @@ func (r *ExperimentReconciler) now() time.Time {
 
 // Reconcile dispatches on phase. Terminal phases are final.
 func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Read from the API server, not the informer cache. A stale cached copy that still says
+	// "Injecting" after we already recorded "Observing" would make the at-most-once guard declare
+	// a false interruption (observed in kind). Decisions must be based on current state.
 	var exp chaosv1.ChaosExperiment
-	if err := r.Get(ctx, req.NamespacedName, &exp); err != nil {
+	if err := r.Reader.Get(ctx, req.NamespacedName, &exp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	switch {
@@ -126,22 +139,52 @@ func (r *ExperimentReconciler) decide(exp *chaosv1.ChaosExperiment) (chaosv1.Exp
 	return chaosv1.PhasePending, condition(metav1.ConditionUnknown, ReasonValidated, "validated")
 }
 
-// gate decides whether a validated experiment may execute now. Fail closed throughout.
+// gate decides whether a validated experiment may execute now. Order and outcomes (fail closed):
+//
+//	lock present            -> Rejected  SystemLocked
+//	policy missing/invalid  -> Rejected  PolicyUnavailable / PolicyViolation
+//	concurrency limit hit   -> Pending   ConcurrencyLimit (retried)
+//	approval missing/bad    -> Rejected  ApprovalRequired / ApprovalInvalid
+//	namespace not opted in  -> Rejected  NamespaceNotOptedIn / NamespaceProtected
 func (r *ExperimentReconciler) gate(ctx context.Context, exp *chaosv1.ChaosExperiment) (chaosv1.ExperimentPhase, metav1.Condition, error) {
-	// Until ChaosPolicy (blast-radius limits) and approval attestations are enforced, nothing
-	// executes outside development clusters (architecture §12, §15).
-	if r.Identity.Environment != identity.Development {
-		p, c := chaosv1.PhasePending, condition(metav1.ConditionUnknown, ReasonExecutionDisabled,
-			fmt.Sprintf("execution is disabled in %s clusters until ChaosPolicy and approval attestations are enforced", r.Identity.Environment))
+	locked, lockMsg, err := r.locked(ctx)
+	if err != nil {
+		return "", metav1.Condition{}, err
+	}
+	if locked {
+		p, c := reject(ReasonSystemLocked, lockMsg)
 		return p, c, nil
 	}
-	checked := map[string]bool{}
-	for _, st := range exp.Spec.Steps {
-		if st.Fault == nil || checked[st.Fault.Target.Namespace] {
-			continue
+
+	pol, err := r.policy(ctx)
+	if err != nil {
+		return "", metav1.Condition{}, err
+	}
+	if pol == nil {
+		p, c := reject(ReasonPolicyUnavailable, "no ChaosPolicy 'default' is installed (or the operator cannot read it); nothing may run")
+		return p, c, nil
+	}
+	if v := chaosv1.CheckPolicy(&exp.Spec, pol, string(r.Identity.Environment)); len(v) > 0 {
+		msgs := make([]string, len(v))
+		for i, x := range v {
+			msgs[i] = x.Field + ": " + x.Message
 		}
-		name := st.Fault.Target.Namespace
-		checked[name] = true
+		p, c := reject(ReasonPolicyViolation, strings.Join(msgs, "; "))
+		return p, c, nil
+	}
+
+	running, err := r.runningCount(ctx, exp.Name)
+	if err != nil {
+		return "", metav1.Condition{}, err
+	}
+	if running >= int(pol.Spec.Limits.MaxConcurrentExperiments) {
+		p, c := chaosv1.PhasePending, condition(metav1.ConditionUnknown, ReasonConcurrencyLimit,
+			fmt.Sprintf("%d experiment(s) running; policy allows %d at a time", running, pol.Spec.Limits.MaxConcurrentExperiments))
+		return p, c, nil
+	}
+
+	namespaces := map[string]*corev1.Namespace{}
+	for _, name := range attestation.TargetNamespaces(&exp.Spec) {
 		var ns corev1.Namespace
 		err := r.Reader.Get(ctx, types.NamespacedName{Name: name}, &ns)
 		switch {
@@ -161,8 +204,95 @@ func (r *ExperimentReconciler) gate(ctx context.Context, exp *chaosv1.ChaosExper
 			p, c := reject(ReasonNamespaceNotOptedIn, fmt.Sprintf("namespace %q is not opted in: label %s=true is missing", name, chaosv1.LabelEnabled))
 			return p, c, nil
 		}
+		namespaces[name] = &ns
+	}
+
+	if chaosv1.ApprovalRequired(&exp.Spec, pol) {
+		if reason, msg := r.verifyApproval(ctx, exp, pol, namespaces); reason != "" {
+			p, c := reject(reason, msg)
+			return p, c, nil
+		}
 	}
 	return chaosv1.PhaseRunning, condition(metav1.ConditionTrue, ReasonAccepted, "accepted for execution"), nil
+}
+
+// locked reports whether any ChaosLock exists (emergency stop).
+func (r *ExperimentReconciler) locked(ctx context.Context) (bool, string, error) {
+	var locks chaosv1.ChaosLockList
+	if err := r.Client.List(ctx, &locks); err != nil {
+		return false, "", fmt.Errorf("list ChaosLocks: %w", err) // cannot tell: retry, never proceed
+	}
+	if len(locks.Items) == 0 {
+		return false, "", nil
+	}
+	l := locks.Items[0]
+	return true, truncate(fmt.Sprintf("emergency stop engaged by %s: %s (ChaosLock %s)", l.Spec.EngagedBy, l.Spec.Reason, l.Name), 1024), nil
+}
+
+// policy returns the cluster's ChaosPolicy, or nil when absent or unreadable.
+func (r *ExperimentReconciler) policy(ctx context.Context) (*chaosv1.ChaosPolicy, error) {
+	var p chaosv1.ChaosPolicy
+	err := r.Reader.Get(ctx, types.NamespacedName{Name: chaosv1.PolicyName}, &p)
+	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read ChaosPolicy: %w", err)
+	}
+	return &p, nil
+}
+
+func (r *ExperimentReconciler) runningCount(ctx context.Context, self string) (int, error) {
+	var list chaosv1.ChaosExperimentList
+	if err := r.Client.List(ctx, &list, client.InNamespace(r.Namespace)); err != nil {
+		return 0, fmt.Errorf("list experiments: %w", err)
+	}
+	n := 0
+	for _, e := range list.Items {
+		if e.Name != self && e.Status.Phase == chaosv1.PhaseRunning {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// verifyApproval checks the approval attestation and consumes it (single use). It returns a
+// rejection reason and message, or "" when approved.
+func (r *ExperimentReconciler) verifyApproval(ctx context.Context, exp *chaosv1.ChaosExperiment, pol *chaosv1.ChaosPolicy, namespaces map[string]*corev1.Namespace) (string, string) {
+	token := exp.Annotations[chaosv1.AnnotationApproval]
+	if token == "" {
+		return ReasonApprovalRequired, fmt.Sprintf("policy requires an approval attestation (%d approver(s)) for this experiment", chaosv1.MinApprovals(pol))
+	}
+	maxAge, err := time.ParseDuration(pol.Spec.Approval.MaxAttestationAge)
+	if err != nil || maxAge <= 0 {
+		maxAge = time.Hour
+	}
+	claims, err := attestation.Verify(token, pol.Spec.Approval.TrustedKeys, attestation.Expectations{
+		ClusterID: r.Identity.ClusterID, Environment: string(r.Identity.Environment), Spec: &exp.Spec,
+		MinApprovals: chaosv1.MinApprovals(pol), MaxAge: maxAge, Now: r.now(),
+	})
+	if err != nil {
+		return ReasonApprovalInvalid, err.Error()
+	}
+	// The approving group must be the group cluster admins assigned to every target namespace.
+	for name, ns := range namespaces {
+		want := ns.Annotations[chaosv1.AnnotationApproverGroup]
+		if want == "" || want != claims.ApproverGroup {
+			return ReasonApprovalInvalid, fmt.Sprintf("approver group %q is not the approver group of namespace %q", claims.ApproverGroup, name)
+		}
+	}
+	// Single use: creating the record fails with AlreadyExists on replay.
+	use := &chaosv1.ChaosAttestationUse{
+		ObjectMeta: metav1.ObjectMeta{Name: "jti-" + strings.ToLower(claims.ID)},
+		Spec:       chaosv1.ChaosAttestationUseSpec{Experiment: exp.Namespace + "/" + exp.Name, SpecSHA256: claims.SpecSHA256},
+	}
+	if err := r.Client.Create(ctx, use); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return ReasonApprovalInvalid, "attestation has already been used (replay)"
+		}
+		return ReasonApprovalInvalid, "could not record attestation use: " + err.Error()
+	}
+	return "", ""
 }
 
 func (r *ExperimentReconciler) start(ctx context.Context, exp, orig *chaosv1.ChaosExperiment, cond metav1.Condition) (ctrl.Result, error) {
@@ -207,6 +337,13 @@ func (r *ExperimentReconciler) advance(ctx context.Context, exp *chaosv1.ChaosEx
 		r.skipRemaining(exp, i)
 		return r.finish(ctx, exp, orig, chaosv1.PhaseAborted, ReasonCancelledByUser, "cancelled during execution")
 	}
+	// Emergency stop: abort before starting or continuing any step.
+	if locked, msg, err := r.locked(ctx); err != nil {
+		return ctrl.Result{}, err
+	} else if locked {
+		r.skipRemaining(exp, i)
+		return r.finish(ctx, exp, orig, chaosv1.PhaseAborted, ReasonSystemLocked, "aborted: "+msg)
+	}
 	maxDur, _ := time.ParseDuration(exp.Spec.MaxDuration) // validated at admission
 	deadline := exp.Status.StartedAt.Add(maxDur)
 	if !now.Before(deadline) {
@@ -218,6 +355,16 @@ func (r *ExperimentReconciler) advance(ctx context.Context, exp *chaosv1.ChaosEx
 			fmt.Sprintf("maxDuration %s exceeded", exp.Spec.MaxDuration))
 	}
 	if i == len(exp.Spec.Steps) {
+		pol, err := r.policy(ctx)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		var prom *chaosv1.PrometheusProvider
+		if pol != nil && pol.Spec.Observability != nil {
+			prom = pol.Spec.Observability.Prometheus
+		}
+		ev := criteria.Evaluator{Reader: r.Reader, Prometheus: prom, Now: r.now}
+		exp.Status.Criteria, exp.Status.Score, exp.Status.Result = ev.Evaluate(ctx, exp)
 		return r.finish(ctx, exp, orig, chaosv1.PhaseCompleted, ReasonCompleted, summary(exp))
 	}
 
@@ -284,7 +431,16 @@ func (r *ExperimentReconciler) injectPodKill(ctx context.Context, exp, orig *cha
 
 	// 1. Plan (read-only). Targets are resolved now, at execution time, and the blast radius
 	//    is checked against the pods actually chosen.
-	plan, err := faults.PlanPodKill(ctx, r.Reader, f)
+	pol, err := r.policy(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if pol == nil { // policy removed mid-run: fail closed before any further injection
+		r.failStep(exp, i, now, "ChaosPolicy no longer available")
+		r.skipRemaining(exp, i+1)
+		return r.finish(ctx, exp, orig, chaosv1.PhaseFailed, ReasonPolicyUnavailable, "ChaosPolicy removed during execution")
+	}
+	plan, err := faults.PlanPodKill(ctx, r.Reader, f, chaosv1.MinSurvivors(pol))
 	if err != nil {
 		r.failStep(exp, i, now, err.Error())
 		r.skipRemaining(exp, i+1)
@@ -431,6 +587,9 @@ func condition(s metav1.ConditionStatus, reason, msg string) metav1.Condition {
 
 func summary(exp *chaosv1.ChaosExperiment) string {
 	var parts []string
+	if exp.Status.Score != nil {
+		parts = append(parts, fmt.Sprintf("result %s, resilience score %d/100", exp.Status.Result, *exp.Status.Score))
+	}
 	for i, s := range exp.Status.Steps {
 		if s.RecoveryMillis != nil {
 			parts = append(parts, fmt.Sprintf("step %d recovered in %dms", i, *s.RecoveryMillis))
@@ -469,7 +628,24 @@ func truncate(s string, n int) string {
 func (r *ExperimentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&chaosv1.ChaosExperiment{}).
+		// Engaging the emergency stop must abort running experiments promptly, not after their
+		// current wait: every ChaosLock event re-queues all non-terminal experiments.
+		Watches(&chaosv1.ChaosLock{}, handler.EnqueueRequestsFromMapFunc(r.allActive)).
 		WithOptions(controllerOptions()).
 		Named("chaosexperiment").
 		Complete(r)
+}
+
+func (r *ExperimentReconciler) allActive(ctx context.Context, _ client.Object) []reconcile.Request {
+	var list chaosv1.ChaosExperimentList
+	if err := r.Client.List(ctx, &list, client.InNamespace(r.Namespace)); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for _, e := range list.Items {
+		if !isTerminal(e.Status.Phase) {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: e.Namespace, Name: e.Name}})
+		}
+	}
+	return reqs
 }

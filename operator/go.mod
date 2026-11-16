@@ -3,6 +3,7 @@ module github.com/kubechaos/kubechaos/operator
 go 1.26.0
 
 require (
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-logr/logr v1.4.3
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0

@@ -62,9 +62,9 @@ B=$(uids); run s2 "[$(kill '{"app":"web"}' 2)]"; A=$(uids)
 [ "$PHASE" = Completed ] && [ "$(comm -23 <(echo "$B") <(echo "$A") | grep -c '^web=')" = 2 ] && pass "Completed, exactly 2 web pods deleted" || bad "kill 2" "$PHASE $MSG"
 
 settle
-echo "Scenario 3: kill 3 of 3 web pods (would remove the last Ready replica)"
+echo "Scenario 3: kill 3 of 3 web pods (exceeds policy maxPodKillCount 2, and would remove the last Ready replica)"
 B=$(uids); run s3 "[$(kill '{"app":"web"}' 3)]"; A=$(uids)
-[ "$PHASE" = Failed ] && [[ "$MSG" == *"blast radius exceeded"* ]] && pass "Failed: $MSG" || bad "kill 3" "$PHASE $MSG"
+[ "$PHASE" = Rejected ] && [ "$REASON" = PolicyViolation ] && pass "Rejected by ChaosPolicy before planning: $MSG" || bad "kill 3" "$PHASE $REASON $MSG"
 expect_untouched "kill 3" "$B" "$A"
 
 echo "Scenario 4: kill the only replica of solo"
@@ -91,7 +91,7 @@ kubectl create ns chaos-notgranted >/dev/null 2>&1; kubectl label ns chaos-notgr
 kubectl -n chaos-notgranted create deployment web --image=registry.k8s.io/pause@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a --replicas=2 >/dev/null 2>&1
 kubectl -n chaos-notgranted rollout status deployment/web --timeout=90s >/dev/null
 B=$(uids chaos-notgranted); run s8 "[$(kill '{"app":"web"}' 1 chaos-notgranted)]"; A=$(uids chaos-notgranted)
-[ "$PHASE" = Rejected ] && [ "$REASON" = NamespaceNotOptedIn ] && pass "Rejected: NamespaceNotOptedIn (RBAC denies the operator)" || bad "not granted" "$PHASE $REASON $MSG"
+[ "$PHASE" = Rejected ] && { [ "$REASON" = NamespaceNotOptedIn ] || [ "$REASON" = PolicyViolation ]; } && pass "Rejected: $REASON (not in policy / not granted)" || bad "not granted" "$PHASE $REASON $MSG"
 expect_untouched "not granted" "$B" "$A"
 kubectl delete ns chaos-notgranted --wait=false >/dev/null
 

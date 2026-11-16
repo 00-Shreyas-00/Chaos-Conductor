@@ -67,20 +67,36 @@ func TestPlanPodKill(t *testing.T) {
 	three := []*corev1.Pod{pod("a", owner("rs1")), pod("b", owner("rs1")), pod("c", owner("rs1"))}
 
 	t.Run("kills requested count, records ready-before", func(t *testing.T) {
-		plan, err := PlanPodKill(ctx, reader(three...), step(2))
+		plan, err := PlanPodKill(ctx, reader(three...), step(2), 1)
 		if err != nil || len(plan.Targets) != 2 || plan.ReadyBefore != 3 {
 			t.Fatalf("plan=%+v err=%v", plan, err)
 		}
 	})
 
 	t.Run("never kills the last ready replica", func(t *testing.T) {
-		_, err := PlanPodKill(ctx, reader(three...), step(3))
+		_, err := PlanPodKill(ctx, reader(three...), step(3), 1)
 		if !errors.Is(err, ErrBlastRadius) {
 			t.Fatalf("want ErrBlastRadius, got %v", err)
 		}
-		_, err = PlanPodKill(ctx, reader(pod("solo", owner("rs-solo"))), step(1))
+		_, err = PlanPodKill(ctx, reader(pod("solo", owner("rs-solo"))), step(1), 1)
 		if !errors.Is(err, ErrBlastRadius) {
 			t.Fatalf("single replica: want ErrBlastRadius, got %v", err)
+		}
+	})
+
+	t.Run("policy minReadyReplicas raises the survivor floor", func(t *testing.T) {
+		// 3 ready, policy keeps 2 => at most 1 killable.
+		if _, err := PlanPodKill(ctx, reader(three...), step(1), 2); err != nil {
+			t.Fatalf("1 of 3 with 2 survivors must be allowed: %v", err)
+		}
+		if _, err := PlanPodKill(ctx, reader(three...), step(2), 2); !errors.Is(err, ErrBlastRadius) {
+			t.Fatalf("2 of 3 with 2 survivors must be rejected, got %v", err)
+		}
+		if _, err := PlanPodKill(ctx, reader(three...), step(2), 0); !errors.Is(err, nil) {
+			t.Fatalf("a floor below 1 is raised to 1, so 2 of 3 is fine: %v", err)
+		}
+		if _, err := PlanPodKill(ctx, reader(three...), step(3), 0); !errors.Is(err, ErrBlastRadius) {
+			t.Fatalf("a floor of 0 must still never kill the last replica, got %v", err)
 		}
 	})
 
@@ -88,7 +104,7 @@ func TestPlanPodKill(t *testing.T) {
 		// rs1 has 2 ready (1 killable), rs2 has 2 ready (1 killable) => 2 total, never 2 from one workload.
 		pods := []*corev1.Pod{pod("a", owner("rs1")), pod("b", owner("rs1")), pod("c", owner("rs2")), pod("d", owner("rs2"))}
 		for i := 0; i < 50; i++ {
-			plan, err := PlanPodKill(ctx, reader(pods...), step(2))
+			plan, err := PlanPodKill(ctx, reader(pods...), step(2), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -104,7 +120,7 @@ func TestPlanPodKill(t *testing.T) {
 				t.Fatalf("killed %v — would empty a workload", owners)
 			}
 		}
-		if _, err := PlanPodKill(ctx, reader(pods...), step(3)); !errors.Is(err, ErrBlastRadius) {
+		if _, err := PlanPodKill(ctx, reader(pods...), step(3), 1); !errors.Is(err, ErrBlastRadius) {
 			t.Fatalf("3 of 4 across two 2-replica workloads must be rejected, got %v", err)
 		}
 	})
@@ -121,7 +137,7 @@ func TestPlanPodKill(t *testing.T) {
 			pod("other", owner("rs1"), label("app", "other")),
 		}
 		for i := 0; i < 50; i++ {
-			plan, err := PlanPodKill(ctx, reader(pods...), step(1))
+			plan, err := PlanPodKill(ctx, reader(pods...), step(1), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,17 +149,17 @@ func TestPlanPodKill(t *testing.T) {
 
 	t.Run("protected pods still count as ready survivors", func(t *testing.T) {
 		// rs1: one eligible + one protected, both Ready => the eligible one may be killed.
-		plan, err := PlanPodKill(ctx, reader(pod("ok", owner("rs1")), pod("prot", owner("rs1"), protected)), step(1))
+		plan, err := PlanPodKill(ctx, reader(pod("ok", owner("rs1")), pod("prot", owner("rs1"), protected)), step(1), 1)
 		if err != nil || plan.Targets[0].Name != "ok" {
 			t.Fatalf("plan=%+v err=%v", plan, err)
 		}
 	})
 
 	t.Run("no matches and no eligible pods are errors", func(t *testing.T) {
-		if _, err := PlanPodKill(ctx, reader(), step(1)); !errors.Is(err, ErrNoTargets) {
+		if _, err := PlanPodKill(ctx, reader(), step(1), 1); !errors.Is(err, ErrNoTargets) {
 			t.Fatalf("want ErrNoTargets, got %v", err)
 		}
-		if _, err := PlanPodKill(ctx, reader(pod("bare"), pod("bare2")), step(1)); !errors.Is(err, ErrNoEligible) {
+		if _, err := PlanPodKill(ctx, reader(pod("bare"), pod("bare2")), step(1), 1); !errors.Is(err, ErrNoEligible) {
 			t.Fatalf("want ErrNoEligible, got %v", err)
 		}
 	})
@@ -151,7 +167,7 @@ func TestPlanPodKill(t *testing.T) {
 	t.Run("other namespaces are never considered", func(t *testing.T) {
 		other := pod("x", owner("rs9"))
 		other.Namespace = "prod"
-		if _, err := PlanPodKill(ctx, reader(other, pod("y", owner("rs9"))), step(1)); !errors.Is(err, ErrNoEligible) && !errors.Is(err, ErrBlastRadius) {
+		if _, err := PlanPodKill(ctx, reader(other, pod("y", owner("rs9"))), step(1), 1); !errors.Is(err, ErrNoEligible) && !errors.Is(err, ErrBlastRadius) {
 			t.Fatalf("got %v", err)
 		}
 	})

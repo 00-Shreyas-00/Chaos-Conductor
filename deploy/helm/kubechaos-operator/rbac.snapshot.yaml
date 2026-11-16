@@ -1,4 +1,52 @@
 ---
+# Source: kubechaos-operator/templates/control-plane-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubechaos-control-plane
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+rules:
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaospolicies"]
+    resourceNames: ["default"]
+    verbs: ["get"]
+  # Engage the emergency stop (create) and see it; never delete (= unlock).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaoslocks"]
+    verbs: ["get", "list", "watch", "create"]
+
+---
+# Source: kubechaos-operator/templates/rbac.yaml
+# Cluster-scoped KubeChaos objects. Read-only except recording attestation use.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubechaos-operator
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+rules:
+  # The one cluster policy, read-only (cluster admins own it).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaospolicies"]
+    resourceNames: ["default"]
+    verbs: ["get"]
+  # Emergency-stop locks: observe only. Never create or delete.
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaoslocks"]
+    verbs: ["get", "list", "watch"]
+  # Single-use approval attestations: create only (AlreadyExists = replay).
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaosattestationuses"]
+    verbs: ["create"]
+
+---
 # Source: kubechaos-operator/templates/targets-rbac.yaml
 # Read the opt-in/protected labels of exactly the listed namespaces. An empty resourceNames
 # list would mean ALL namespaces, so this rule is rendered only when targets exist.
@@ -16,6 +64,46 @@ rules:
     resources: ["namespaces"]
     resourceNames: ["demo"]
     verbs: ["get"]
+
+---
+# Source: kubechaos-operator/templates/control-plane-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubechaos-control-plane
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubechaos-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-control-plane
+    namespace: kubechaos-system
+
+---
+# Source: kubechaos-operator/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubechaos-operator
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubechaos-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-operator
+    namespace: kubechaos-system
 
 ---
 # Source: kubechaos-operator/templates/targets-rbac.yaml
@@ -36,6 +124,23 @@ subjects:
   - kind: ServiceAccount
     name: kubechaos-operator
     namespace: kubechaos-system
+
+---
+# Source: kubechaos-operator/templates/control-plane-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubechaos-control-plane
+  namespace: kubechaos-system
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+rules:
+  - apiGroups: ["chaos.kubechaos.io"]
+    resources: ["chaosexperiments"]
+    verbs: ["create", "get", "list", "watch", "patch"]
 
 ---
 # Source: kubechaos-operator/templates/rbac.yaml
@@ -93,6 +198,27 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
+
+---
+# Source: kubechaos-operator/templates/control-plane-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubechaos-control-plane
+  namespace: kubechaos-system
+  labels:
+    app.kubernetes.io/name: kubechaos-operator
+    app.kubernetes.io/instance: kubechaos-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: kubechaos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubechaos-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: kubechaos-control-plane
+    namespace: kubechaos-system
 
 ---
 # Source: kubechaos-operator/templates/rbac.yaml

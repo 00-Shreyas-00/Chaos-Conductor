@@ -21,6 +21,9 @@ const (
 	LabelEnabled = "chaos.kubechaos.io/enabled"
 	// LabelProtected = "true" on a namespace or pod excludes it from every experiment.
 	LabelProtected = "chaos.kubechaos.io/protected"
+	// AnnotationApproverGroup on a namespace names the IdP group whose members may approve
+	// experiments targeting it (e.g. /teams/payments/head-developers). Set by cluster admins.
+	AnnotationApproverGroup = "chaos.kubechaos.io/approver-group"
 )
 
 // Hard upper bounds of the API. Cluster policy (ChaosPolicy, later) may only narrow them.
@@ -66,6 +69,7 @@ type ChaosExperiment struct {
 // spec.cancel, which may only change from false to true.
 //
 // +kubebuilder:validation:XValidation:rule="self.clusterID == oldSelf.clusterID && self.requestedBy == oldSelf.requestedBy && self.maxDuration == oldSelf.maxDuration && self.steps == oldSelf.steps",message="spec is immutable; only spec.cancel may change"
+// +kubebuilder:validation:XValidation:rule="has(self.successCriteria) == has(oldSelf.successCriteria) && (!has(self.successCriteria) || self.successCriteria == oldSelf.successCriteria)",message="spec is immutable; only spec.cancel may change"
 // +kubebuilder:validation:XValidation:rule="!oldSelf.cancel || self.cancel",message="spec.cancel cannot be reverted once set"
 type ChaosExperimentSpec struct {
 	// ClusterID must equal the operator's cluster identity, or the experiment is rejected.
@@ -88,10 +92,60 @@ type ChaosExperimentSpec struct {
 	// +kubebuilder:validation:MaxItems=20
 	Steps []Step `json:"steps"`
 
+	// SuccessCriteria are evaluated after the last step and produce the resilience score.
+	// +kubebuilder:validation:MaxItems=10
+	// +optional
+	SuccessCriteria []Criterion `json:"successCriteria,omitempty"`
+
 	// Cancel requests cancellation. It can be set to true but never back to false.
 	// +kubebuilder:default=false
 	// +optional
 	Cancel bool `json:"cancel"`
+}
+
+// AnnotationApproval carries the approval service's signed attestation (compact JWS).
+const AnnotationApproval = "chaos.kubechaos.io/approval"
+
+// MetricName is one entry of the fixed metric catalogue. There is no free-form metric or
+// query: Kubernetes metrics are computed by the operator; Prometheus metrics come from
+// server-side templates and need a provider configured in ChaosPolicy.
+// +kubebuilder:validation:Enum=available_replicas;ready_ratio;recovery_time;http_error_rate;http_latency_p99
+type MetricName string
+
+const (
+	MetricAvailableReplicas MetricName = "available_replicas" // Ready pods matching the target at the end
+	MetricReadyRatio        MetricName = "ready_ratio"        // Ready/total pods matching the target, percent 0-100
+	MetricRecoveryTime      MetricName = "recovery_time"      // slowest fault-step recovery
+	MetricHTTPErrorRate     MetricName = "http_error_rate"    // Prometheus: 5xx percent over the experiment window
+	MetricHTTPLatencyP99    MetricName = "http_latency_p99"   // Prometheus: p99 latency over the experiment window
+)
+
+// IsPrometheus reports whether the metric needs the Prometheus provider.
+func (m MetricName) IsPrometheus() bool {
+	return m == MetricHTTPErrorRate || m == MetricHTTPLatencyP99
+}
+
+// ComparisonOperator compares observed to expected.
+// +kubebuilder:validation:Enum=lt;le;gt;ge;eq
+type ComparisonOperator string
+
+// Criterion is one explicit, measurable success condition.
+type Criterion struct {
+	Metric   MetricName         `json:"metric"`
+	Operator ComparisonOperator `json:"operator"`
+	// Value is a number for counts/percentages, or a duration (e.g. 30s) for times.
+	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:Pattern=`^([0-9]{1,6}(\.[0-9]{1,3})?|([0-9]{1,4}(ms|s|m)){1,3})$`
+	Value string `json:"value"`
+	// Weight in the resilience score.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:default=1
+	// +optional
+	Weight int32 `json:"weight,omitempty"`
+	// Target for pod- and HTTP-based metrics; defaults to the first fault step's target.
+	// +optional
+	Target *Target `json:"target,omitempty"`
 }
 
 // Requester identifies the human who requested the experiment (OIDC issuer + subject).
@@ -220,6 +274,34 @@ type ChaosExperimentStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=20
 	Steps []StepStatus `json:"steps,omitempty"`
+
+	// Result is Passed when every success criterion passed (or none were given).
+	// +optional
+	// +kubebuilder:validation:Enum=Passed;Failed
+	Result string `json:"result,omitempty"`
+	// Score is the weighted share (0-100) of passed criteria. Derived only from explicit criteria.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	Score *int32 `json:"score,omitempty"`
+	// Criteria are the evaluated success criteria.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	Criteria []CriterionResult `json:"criteria,omitempty"`
+}
+
+// CriterionResult is one evaluated success criterion.
+type CriterionResult struct {
+	Metric   MetricName         `json:"metric"`
+	Operator ComparisonOperator `json:"operator"`
+	Expected string             `json:"expected"`
+	// +optional
+	Observed string `json:"observed,omitempty"`
+	Passed   bool   `json:"passed"`
+	Weight   int32  `json:"weight"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Message string `json:"message,omitempty"`
 }
 
 // StepPhase is the progress of one step.

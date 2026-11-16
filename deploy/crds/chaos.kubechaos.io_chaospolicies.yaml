@@ -1,0 +1,231 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: chaospolicies.chaos.kubechaos.io
+spec:
+  group: chaos.kubechaos.io
+  names:
+    categories:
+    - kubechaos
+    kind: ChaosPolicy
+    listKind: ChaosPolicyList
+    plural: chaospolicies
+    shortNames:
+    - chaospol
+    singular: chaospolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.environment
+      name: Environment
+      type: string
+    - jsonPath: .spec.approval.required
+      name: Approval
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ChaosPolicy is the cluster's security ceiling for chaos experiments. It is written by
+          cluster administrators (GitOps/Helm) and is read-only for every KubeChaos component.
+          Without it nothing executes (fail closed).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ChaosPolicySpec defines what may run on this cluster.
+            properties:
+              allowedFaults:
+                description: AllowedFaults lists the primitives permitted here. Empty
+                  = none.
+                items:
+                  description: |-
+                    FaultType is one of the finite, typed failure primitives. There is deliberately no
+                    "custom", "script" or "command" type.
+                  enum:
+                  - PodKill
+                  type: string
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
+              allowedNamespaces:
+                description: |-
+                  AllowedNamespaces lists namespaces experiments may target. Namespaces must ALSO be
+                  opted in (label + operator RBAC grant). Empty = none.
+                items:
+                  pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                  type: string
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: set
+              approval:
+                description: ApprovalPolicy configures four-eyes approval (architecture
+                  §15).
+                properties:
+                  maxAttestationAge:
+                    default: 1h
+                    description: MaxAttestationAge bounds how old an approval may
+                      be when execution starts.
+                    pattern: ^([0-9]{1,4}(s|m|h)){1,3}$
+                    type: string
+                  minApprovals:
+                    description: MinApprovals is the number of distinct approvers
+                      (never the requester).
+                    format: int32
+                    maximum: 5
+                    minimum: 0
+                    type: integer
+                  required:
+                    description: ApprovalRequirement says when an approval attestation
+                      is required.
+                    enum:
+                    - Never
+                    - RiskAtLeast
+                    - Always
+                    type: string
+                  riskAtLeast:
+                    description: RiskAtLeast applies when Required is RiskAtLeast.
+                    enum:
+                    - Low
+                    - Medium
+                    - High
+                    - Critical
+                    type: string
+                  trustedKeys:
+                    description: TrustedKeys are the approval service's Ed25519 public
+                      keys.
+                    items:
+                      description: TrustedKey is one approval-service public key.
+                      properties:
+                        kid:
+                          pattern: ^[A-Za-z0-9._-]{1,64}$
+                          type: string
+                        publicKey:
+                          description: PublicKey is the base64 (std) encoding of a
+                            32-byte Ed25519 public key.
+                          pattern: ^[A-Za-z0-9+/]{43}=$
+                          type: string
+                      required:
+                      - kid
+                      - publicKey
+                      type: object
+                    maxItems: 8
+                    type: array
+                required:
+                - required
+                type: object
+              environment:
+                description: Environment must equal the operator's cluster identity,
+                  or every experiment is denied.
+                enum:
+                - development
+                - staging
+                - production
+                type: string
+              limits:
+                description: PolicyLimits are the blast-radius limits. They may only
+                  narrow the API's hard limits.
+                properties:
+                  maxConcurrentExperiments:
+                    description: MaxConcurrentExperiments running at the same time
+                      on this cluster.
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                  maxDuration:
+                    maxLength: 16
+                    pattern: ^([0-9]{1,4}(s|m|h)){1,3}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: maxDuration must be between 10s and 1h
+                      rule: duration(self) >= duration('10s') && duration(self) <=
+                        duration('1h')
+                  maxPodKillCount:
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                  minReadyReplicas:
+                    default: 1
+                    description: 'MinReadyReplicas that must survive per workload
+                      (default 1: never the last one).'
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                required:
+                - maxConcurrentExperiments
+                - maxDuration
+                - maxPodKillCount
+                type: object
+              observability:
+                description: ObservabilityPolicy configures optional metric providers.
+                properties:
+                  prometheus:
+                    description: |-
+                      PrometheusProvider enables Prometheus-backed success criteria. Queries are built only from
+                      server-side templates; no field anywhere accepts PromQL.
+                    properties:
+                      metricFamily:
+                        description: MetricFamily selects the server-side template
+                          set for HTTP metrics.
+                        enum:
+                        - istio
+                        - ingress-nginx
+                        - otel
+                        type: string
+                      url:
+                        maxLength: 256
+                        pattern: ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?$
+                        type: string
+                    required:
+                    - metricFamily
+                    - url
+                    type: object
+                type: object
+            required:
+            - allowedFaults
+            - allowedNamespaces
+            - approval
+            - environment
+            - limits
+            type: object
+            x-kubernetes-validations:
+            - message: production requires approval.required=Always and minApprovals
+                >= 1
+              rule: self.environment != 'production' || (self.approval.required ==
+                'Always' && self.approval.minApprovals >= 1)
+            - message: approval requires at least one trusted approver key
+              rule: self.approval.required == 'Never' || size(self.approval.trustedKeys)
+                >= 1
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: the ChaosPolicy must be named 'default' (one policy per cluster)
+          rule: self.metadata.name == 'default'
+    served: true
+    storage: true
+    subresources: {}

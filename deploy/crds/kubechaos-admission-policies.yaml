@@ -16,6 +16,16 @@ spec:
     - expression: "object.metadata.namespace == 'kubechaos-system'"
       message: "ChaosExperiments may only exist in namespace kubechaos-system"
       reason: Forbidden
+    # The approval attestation is fixed at creation: nobody can attach or swap one later.
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        ((has(oldObject.metadata.annotations) && 'chaos.kubechaos.io/approval' in oldObject.metadata.annotations
+            ? oldObject.metadata.annotations['chaos.kubechaos.io/approval'] : '')
+         ==
+         (has(object.metadata.annotations) && 'chaos.kubechaos.io/approval' in object.metadata.annotations
+            ? object.metadata.annotations['chaos.kubechaos.io/approval'] : ''))
+      message: "the approval attestation annotation is immutable after creation"
+      reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -23,4 +33,30 @@ metadata:
   name: kubechaos-experiments-namespace
 spec:
   policyName: kubechaos-experiments-namespace
+  validationActions: ["Deny"]
+---
+# Only the operator records attestation use, so nobody can pre-consume (block) or forge records.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubechaos-attestation-use-writer
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["chaos.kubechaos.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["chaosattestationuses"]
+  validations:
+    - expression: "request.userInfo.username == 'system:serviceaccount:kubechaos-system:kubechaos-operator'"
+      message: "only the KubeChaos operator may record attestation use"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubechaos-attestation-use-writer
+spec:
+  policyName: kubechaos-attestation-use-writer
   validationActions: ["Deny"]
