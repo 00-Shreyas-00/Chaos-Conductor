@@ -4,6 +4,7 @@
     <a mat-button routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Overview</a>
     @if (has('viewer', 'experimenter', 'approver', 'admin')) {
       <a mat-button routerLink="/experiments" routerLinkActive="active" data-testid="nav-experiments">Experiments</a>
+      <a mat-button routerLink="/schedules" routerLinkActive="active" data-testid="nav-schedules">Schedules</a>
     }
     @if (has('admin')) {
       <a mat-button routerLink="/admin" routerLinkActive="active" data-testid="nav-admin">Emergency stop</a>

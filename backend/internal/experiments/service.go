@@ -66,9 +66,23 @@ func Dangerous(spec *chaosv1.ChaosExperimentSpec, pol *chaosv1.ChaosPolicy) bool
 		(pol != nil && pol.Spec.Environment == "production")
 }
 
+// CreateOptions mark submissions made by the scheduler on a schedule owner's behalf.
+type CreateOptions struct {
+	// ScheduleID links the experiment to the schedule that started it.
+	ScheduleID string
+	// Scheduled skips the interactive step-up check: the owner stepped up when creating the
+	// schedule, and nobody is present for a scheduled run. Every other gate still applies.
+	Scheduled bool
+}
+
 // Create authorizes, validates, policy-checks, records (with audit) and submits an experiment.
 // Every denial is audited too.
 func (s *Service) Create(ctx context.Context, p auth.Principal, req CreateRequest, meta RequestMeta) (*Experiment, error) {
+	return s.CreateWith(ctx, p, req, meta, CreateOptions{})
+}
+
+// CreateWith is Create with scheduler options.
+func (s *Service) CreateWith(ctx context.Context, p auth.Principal, req CreateRequest, meta RequestMeta, opts CreateOptions) (*Experiment, error) {
 	spec := chaosv1.ChaosExperimentSpec{
 		ClusterID:       s.Conn.ClusterID(),
 		RequestedBy:     chaosv1.Requester{Issuer: p.Issuer, Subject: p.Subject},
@@ -86,6 +100,9 @@ func (s *Service) Create(ctx context.Context, p auth.Principal, req CreateReques
 	}
 	if ft := faultTypes(&spec); ft != "" {
 		base.FaultType = ft
+	}
+	if opts.ScheduleID != "" {
+		base.Action, base.ActorName = "experiment.create.scheduled", truncate(p.DisplayName+" (schedule "+opts.ScheduleID+")", 255)
 	}
 	deny := func(kind error, reasons ...string) (*Experiment, error) {
 		ev := base
@@ -136,7 +153,7 @@ func (s *Service) Create(ctx context.Context, p auth.Principal, req CreateReques
 	if needApproval && s.Approvals == nil {
 		return deny(ErrApprovalRequired, fmt.Sprintf("cluster policy requires %d approval(s) for this experiment, and no approval service is configured", chaosv1.MinApprovals(pol)))
 	}
-	if Dangerous(&spec, pol) && (p.AuthTime == nil || s.now().Sub(*p.AuthTime) > StepUpMaxAge) {
+	if !opts.Scheduled && Dangerous(&spec, pol) && (p.AuthTime == nil || s.now().Sub(*p.AuthTime) > StepUpMaxAge) {
 		// Not audited as a denial: the user is asked to re-authenticate and retry.
 		return nil, &DetailedError{Kind: ErrStepUpRequired, Reasons: []string{"this experiment is high-risk: sign in again to confirm it is you"}}
 	}
@@ -147,7 +164,7 @@ func (s *Service) Create(ctx context.Context, p auth.Principal, req CreateReques
 	exp := &Experiment{
 		ID: newUUID(), ClusterID: spec.ClusterID, RequesterID: p.IdentityID, RequesterIssuer: p.Issuer,
 		RequesterSubj: p.Subject, RequesterName: p.DisplayName, Description: req.Description, Spec: spec,
-		SpecSHA256: attestation.SpecSHA256(&spec), Risk: chaosv1.SpecRisk(&spec), State: StateSubmitting,
+		SpecSHA256: attestation.SpecSHA256(&spec), Risk: chaosv1.SpecRisk(&spec), State: StateSubmitting, ScheduleID: opts.ScheduleID,
 	}
 	exp.Name = "exp-" + strings.ReplaceAll(exp.ID, "-", "")[:12]
 	ev := base
@@ -401,4 +418,55 @@ func truncate(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+// Preflight runs the admission checks of Create without recording or submitting anything:
+// authorization, validation, cluster policy and approval availability. Schedules use it
+// so a schedule that could never run is refused when it is created. The lock is ignored
+// (runs during a lock are skipped, not refused).
+func (s *Service) Preflight(ctx context.Context, p auth.Principal, req CreateRequest) (*chaosv1.ChaosExperimentSpec, *chaosv1.ChaosPolicy, error) {
+	spec := &chaosv1.ChaosExperimentSpec{
+		ClusterID: s.Conn.ClusterID(), RequestedBy: chaosv1.Requester{Issuer: p.Issuer, Subject: p.Subject},
+		MaxDuration: req.MaxDuration, Steps: req.Steps, SuccessCriteria: req.SuccessCriteria,
+	}
+	if !authorization.Allowed(p, authorization.CreateExperiment) {
+		return nil, nil, &DetailedError{Kind: ErrForbidden, Reasons: []string{"role does not permit creating experiments"}}
+	}
+	if len(req.Description) > 500 {
+		return nil, nil, &DetailedError{Kind: ErrInvalid, Reasons: []string{"description: at most 500 characters"}}
+	}
+	if errs := chaosv1.ValidateSpec(spec); len(errs) > 0 {
+		reasons := make([]string, len(errs))
+		for i, e := range errs {
+			reasons[i] = e.Error()
+		}
+		return nil, nil, &DetailedError{Kind: ErrInvalid, Reasons: reasons}
+	}
+	pol, err := s.Conn.Policy(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	if pol == nil {
+		return nil, nil, &DetailedError{Kind: ErrPolicy, Reasons: []string{"no ChaosPolicy is installed on the cluster; nothing may run"}}
+	}
+	if v := chaosv1.CheckPolicy(spec, pol, pol.Spec.Environment); len(v) > 0 {
+		reasons := make([]string, len(v))
+		for i, x := range v {
+			reasons[i] = x.Field + ": " + x.Message
+		}
+		return nil, nil, &DetailedError{Kind: ErrPolicy, Reasons: reasons}
+	}
+	if chaosv1.ApprovalRequired(spec, pol) && s.Approvals == nil {
+		return nil, nil, &DetailedError{Kind: ErrApprovalRequired, Reasons: []string{"cluster policy requires approval and no approval service is configured"}}
+	}
+	return spec, pol, nil
+}
+
+// IsTerminal reports whether an experiment has finished (or can never run).
+func IsTerminal(e *Experiment) bool {
+	switch e.State {
+	case StateSubmitFailed, StateApprovalRejected, StateApprovalExpired:
+		return true
+	}
+	return isTerminal(e.Phase)
 }

@@ -18,6 +18,11 @@
   </mat-card>
 }
 
+<mat-button-toggle-group [value]="mode()" (change)="mode.set($event.value)" aria-label="When to run" class="mode">
+  <mat-button-toggle value="once" data-testid="mode-once">Run once now</mat-button-toggle>
+  <mat-button-toggle value="schedule" data-testid="mode-schedule">Run on a schedule</mat-button-toggle>
+</mat-button-toggle-group>
+
 <form [formGroup]="form" (ngSubmit)="submit()" class="form">
   @if (scenarios().length) {
     <mat-form-field appearance="outline">
@@ -116,6 +121,56 @@
     <button mat-stroked-button type="button" (click)="addCriterion()">Add criterion</button>
   </div>
 
+  @if (mode() === 'schedule') {
+    <h2>Schedule</h2>
+    <p class="hint">
+      Runs this experiment at random times inside the window, like Chaos Monkey. Gaps are at least the minimum
+      and average the mean, counting window time only. A run is skipped while the previous one is still
+      running or the emergency stop is engaged; three refusals in a row pause the schedule.
+    </p>
+    <div [formGroup]="schedule" class="row">
+      <mat-form-field appearance="outline">
+        <mat-label>Schedule name</mat-label>
+        <input matInput formControlName="name" placeholder="web-pod-monkey" data-testid="schedule-name" />
+        @if (schedule.controls.name.invalid) { <mat-error>Lowercase letters, digits and '-'</mat-error> }
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>Min gap</mat-label>
+        <input matInput formControlName="minInterval" data-testid="schedule-min" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>Mean gap</mat-label>
+        <input matInput formControlName="meanInterval" data-testid="schedule-mean" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Days</mat-label>
+        <mat-select formControlName="days" multiple>
+          @for (d of weekdays; track d) { <mat-option [value]="d">{{ d }}</mat-option> }
+        </mat-select>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>From</mat-label>
+        <input matInput formControlName="from" placeholder="10:00" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>To</mat-label>
+        <input matInput formControlName="to" placeholder="16:00" />
+      </mat-form-field>
+      <mat-form-field appearance="outline">
+        <mat-label>Time zone</mat-label>
+        <input matInput formControlName="timeZone" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>Expires (days)</mat-label>
+        <input matInput type="number" formControlName="expiresInDays" min="1" max="90" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="narrow">
+        <mat-label>Max runs (0 = ∞)</mat-label>
+        <input matInput type="number" formControlName="maxRuns" min="0" max="1000" />
+      </mat-form-field>
+    </div>
+  }
+
   <h2>Confirm</h2>
   <p>This will delete real pods. Type the target namespace(s) <code>{{ targetNamespaces().join(',') }}</code> to confirm.</p>
   <mat-form-field appearance="outline">
@@ -133,5 +188,5 @@
     </div>
   }
 
-  <button mat-flat-button type="submit" [disabled]="submitting() || !confirmationMatches()" data-testid="submit">Run experiment</button>
+  <button mat-flat-button type="submit" [disabled]="submitting() || !confirmationMatches()" data-testid="submit">{{ mode() === 'schedule' ? 'Create schedule' : 'Run experiment' }}</button>
 </form>

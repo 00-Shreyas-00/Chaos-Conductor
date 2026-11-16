@@ -29,6 +29,9 @@ import (
 	"github.com/kubechaos/kubechaos/backend/internal/experiments"
 	"github.com/kubechaos/kubechaos/backend/internal/logging"
 	"github.com/kubechaos/kubechaos/backend/internal/repository"
+	"github.com/kubechaos/kubechaos/backend/internal/schedules"
+
+	_ "time/tzdata" // schedule windows use IANA time zones; distroless images have no zoneinfo
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -142,6 +145,11 @@ func serve(ctx context.Context) error {
 			logger.Info("approval service enabled", slog.String("url", cfg.ApproverURL))
 		}
 		go deps.Experiments.Run(ctx) // mirror cluster status into the DB and to SSE subscribers
+		// Scheduled chaos: every replica may tick; the store's compare-and-set claim makes each
+		// run fire exactly once.
+		deps.Schedules = &schedules.Service{Store: repository.NewScheduleStore(pool, auditWriter), Exp: deps.Experiments,
+			Audit: auditWriter, Log: logger}
+		go deps.Schedules.Run(ctx, 10*time.Second)
 		logger.Info("cluster connector enabled", slog.String("cluster", cfg.ClusterID))
 	} else {
 		logger.Warn("no KUBECHAOS_KUBECONFIG: experiment endpoints are disabled (503)")

@@ -100,3 +100,53 @@ describe('ExperimentForm', () => {
     expect(nav).toHaveBeenCalledWith(['/experiments', 'abc']);
   });
 });
+
+describe('ExperimentForm schedule mode', () => {
+  function setup() {
+    sessionStorage.clear();
+    TestBed.configureTestingModule({
+      imports: [ExperimentForm],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: BROWSER_LOCATION, useValue: { pathname: '/', search: '', assign: () => undefined } },
+      ],
+    });
+    const fixture = TestBed.createComponent(ExperimentForm);
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/v1/scenarios').flush({ items: [] });
+    http.expectOne('/api/v1/clusters').flush({ items: [] });
+    return { fixture, http, form: fixture.componentInstance };
+  }
+
+  it('builds a schedule around the same template', () => {
+    const { form } = setup();
+    form.mode.set('schedule');
+    form.schedule.patchValue({ name: 'web-monkey', minInterval: '1h', meanInterval: '6h', days: ['Mon', 'Wed'], from: '09:30',
+      to: '15:00', timeZone: 'Europe/London', expiresInDays: 14, maxRuns: 10 });
+    const now = new Date('2026-11-16T12:00:00Z');
+    const req = form.buildScheduleRequest(now);
+    expect(req.template.steps[0].fault?.target.namespace).toBe('demo');
+    expect(req.window).toEqual({ days: ['Mon', 'Wed'], from: '09:30', to: '15:00', timeZone: 'Europe/London' });
+    expect(req.expiresAt).toBe('2026-11-30T12:00:00.000Z');
+    expect([req.minInterval, req.meanInterval, req.maxRuns, req.confirm]).toEqual(['1h', '6h', 10, true]);
+    expect(Object.keys(req)).not.toContain('owner');
+  });
+
+  it('posts to /schedules, and not before the schedule fields are valid', () => {
+    const { form, http } = setup();
+    form.mode.set('schedule');
+    form.form.controls.confirmation.setValue('demo');
+    form.submit(); // name missing
+    http.expectNone('/api/v1/schedules');
+    http.expectNone('/api/v1/experiments');
+    form.schedule.controls.name.setValue('web-monkey');
+    form.submit();
+    const req = http.expectOne('/api/v1/schedules');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body.name).toBe('web-monkey');
+    http.expectNone('/api/v1/experiments');
+  });
+});

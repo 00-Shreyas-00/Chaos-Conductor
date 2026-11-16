@@ -87,6 +87,12 @@ abort), *breadth of faults*, and *experiment design help* (what should we test?)
 ## 3. Suggestions adopted from Chaos Monkey
 
 ### S1. `ChaosSchedule`: continuous, randomized, opt-in chaos  ★ high value
+> **Status: implemented** (architecture §17). Two deliberate changes from this sketch:
+> - **Where it runs:** schedules live in the control plane, not as an operator CRD, so every run
+>   reuses the existing experiment pipeline and UI mirroring.
+> - **Approval:** with approval-required policies, each run is approved individually. Standing
+>   approvals and blackout calendars remain open.
+
 A cluster-scoped CRD (admin-owned, like `ChaosPolicy`) plus a scheduler in the operator:
 ```yaml
 kind: ChaosSchedule

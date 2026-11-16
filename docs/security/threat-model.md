@@ -276,6 +276,26 @@ This is the threat the architecture is built around.
   escaped, and windows, timeouts and sample limits are bounded (architecture.md §16).
   Fuzz tests on the template builder.
 
+### T18 (additional) Abuse of scheduled chaos
+- **Attacks:**
+  - an experimenter schedules disruption to run at night or for months
+  - schedules keep running after the owner leaves or loses their role
+  - several replicas fire the same run
+  - a schedule is used to bypass approval or step-up
+- **Mitigations:**
+  - Runs go through the full experiment pipeline: policy, lock, approval per run,
+    survivors and audit.
+  - Windows are explicit, and there is an interval floor (1 h outside development).
+  - Expiry is mandatory, at most 90 days.
+  - One active run per schedule, and auto-pause after 3 consecutive denials.
+  - Step-up is required at creation for high-risk templates.
+  - Resume re-checks the owner's current roles and the policy.
+  - Approvers and admins can pause any schedule.
+  - A compare-and-set claim gives exactly one firing per run.
+  - Run history is append-only.
+- **Residual:** an owner's revoked role takes effect only on resume, expiry or pause.
+  Make expiry short in production, and pause schedules during offboarding.
+
 ## 4. Security test obligations (derived)
 
 Unit: authZ matrix, policy evaluator (including protected namespaces that policy cannot

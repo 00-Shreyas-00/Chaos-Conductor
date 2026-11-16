@@ -47,10 +47,10 @@ func (s *ExperimentStore) CreateWithAudit(ctx context.Context, e *experiments.Ex
 		return err
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO app.experiments (id, name, cluster_id, requested_by, description, spec, spec_sha256, risk, state)
-		VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, $8, $9)
+		INSERT INTO app.experiments (id, name, cluster_id, requested_by, description, spec, spec_sha256, risk, state, schedule_id)
+		VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, $8, $9, NULLIF($10, '')::uuid)
 		RETURNING created_at, updated_at`,
-		e.ID, e.Name, e.ClusterID, e.RequesterID, e.Description, spec, e.SpecSHA256, string(e.Risk), e.State).
+		e.ID, e.Name, e.ClusterID, e.RequesterID, e.Description, spec, e.SpecSHA256, string(e.Risk), e.State, e.ScheduleID).
 		Scan(&e.CreatedAt, &e.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert experiment: %w", err)
@@ -96,7 +96,7 @@ func (s *ExperimentStore) SetCancelRequested(ctx context.Context, id string) err
 const selectExperiment = `
 	SELECT e.id::text, e.name, e.cluster_id, e.requested_by::text, i.issuer, i.subject, coalesce(i.display_name, ''),
 	       e.description, e.spec, e.spec_sha256, e.risk, e.state, e.phase, e.result, e.score, e.status,
-	       e.cancel_requested, e.created_at, e.updated_at, coalesce(e.approval_request_id::text, '')
+	       e.cancel_requested, e.created_at, e.updated_at, coalesce(e.approval_request_id::text, ''), coalesce(e.schedule_id::text, '')
 	FROM app.experiments e JOIN app.identities i ON i.id = e.requested_by `
 
 func scanExperiment(row pgx.Row) (*experiments.Experiment, error) {
@@ -107,7 +107,7 @@ func scanExperiment(row pgx.Row) (*experiments.Experiment, error) {
 	)
 	err := row.Scan(&e.ID, &e.Name, &e.ClusterID, &e.RequesterID, &e.RequesterIssuer, &e.RequesterSubj, &e.RequesterName,
 		&e.Description, &spec, &e.SpecSHA256, &risk, &e.State, &e.Phase, &e.Result, &e.Score, &status,
-		&e.CancelRequested, &e.CreatedAt, &e.UpdatedAt, &e.ApprovalRequest)
+		&e.CancelRequested, &e.CreatedAt, &e.UpdatedAt, &e.ApprovalRequest, &e.ScheduleID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, experiments.ErrNotFound
 	}

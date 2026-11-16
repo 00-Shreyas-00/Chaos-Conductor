@@ -20,6 +20,7 @@ import (
 	"github.com/kubechaos/kubechaos/backend/internal/events"
 	"github.com/kubechaos/kubechaos/backend/internal/experiments"
 	"github.com/kubechaos/kubechaos/backend/internal/httpx"
+	"github.com/kubechaos/kubechaos/backend/internal/schedules"
 )
 
 type fakeDB struct{ err error }
@@ -44,7 +45,8 @@ func newRouterWithCluster(db Pinger, a *auth.Service) (http.Handler, *experiment
 	store, conn := experiments.NewMemStore(), clusterstest.New()
 	broker := events.NewBroker(2)
 	svc := &experiments.Service{Store: store, Conn: conn, Audit: store, Broker: broker, Log: discardLogger()}
-	return NewRouter(Deps{Logger: discardLogger(), DB: db, Auth: a, Experiments: svc, Broker: broker,
+	sched := &schedules.Service{Store: schedules.NewMemStore(store), Exp: svc, Audit: store, Log: discardLogger()}
+	return NewRouter(Deps{Logger: discardLogger(), DB: db, Auth: a, Experiments: svc, Schedules: sched, Broker: broker,
 		Audit: fakeAudit{}, MaxBodyBytes: 64 << 10, Version: "test"}), store, conn
 }
 

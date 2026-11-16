@@ -28,6 +28,7 @@ type Experiment struct {
 	Risk            chaosv1.RiskLevel              `json:"risk"`
 	State           string                         `json:"state"` // see States
 	ApprovalRequest string                         `json:"approvalRequestId,omitempty"`
+	ScheduleID      string                         `json:"scheduleId,omitempty"`
 	Phase           string                         `json:"phase"`
 	Result          string                         `json:"result,omitempty"`
 	Score           *int32                         `json:"score,omitempty"`

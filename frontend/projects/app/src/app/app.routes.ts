@@ -23,6 +23,18 @@ export const routes: Routes = [
     loadComponent: () => import('./features/experiments/experiment-detail').then((m) => m.ExperimentDetail),
   },
   {
+    path: 'schedules',
+    title: 'Schedules · KubeChaos',
+    canActivate: [roleGuard('viewer', 'experimenter', 'approver', 'admin')],
+    loadComponent: () => import('./features/schedules/schedule-list').then((m) => m.ScheduleList),
+  },
+  {
+    path: 'schedules/:id',
+    title: 'Schedule · KubeChaos',
+    canActivate: [roleGuard('viewer', 'experimenter', 'approver', 'admin')],
+    loadComponent: () => import('./features/schedules/schedule-detail').then((m) => m.ScheduleDetail),
+  },
+  {
     path: 'admin',
     title: 'Emergency stop · KubeChaos',
     canActivate: [roleGuard('admin')],

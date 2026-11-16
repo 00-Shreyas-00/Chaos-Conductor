@@ -78,6 +78,7 @@ export interface Experiment {
   risk: string;
   state: 'Submitting' | 'Submitted' | 'SubmitFailed' | 'PendingApproval' | 'ApprovalRejected' | 'ApprovalExpired';
   approvalRequestId?: string;
+  scheduleId?: string;
   phase: string;
   result?: string;
   score?: number;
@@ -151,4 +152,64 @@ export interface ApiProblem {
   code?: string;
   reasons?: string[];
   detail?: string;
+}
+
+export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
+
+export interface ScheduleWindow {
+  days: Weekday[];
+  from: string;
+  to: string;
+  timeZone: string;
+}
+
+export interface ScheduleTemplate {
+  maxDuration: string;
+  steps: Step[];
+  successCriteria?: Criterion[];
+}
+
+export interface CreateScheduleRequest {
+  name: string;
+  description: string;
+  template: ScheduleTemplate;
+  minInterval: string;
+  meanInterval: string;
+  window: ScheduleWindow;
+  expiresAt: string;
+  maxRuns: number;
+  confirm: boolean;
+}
+
+export interface Schedule {
+  id: string;
+  name: string;
+  clusterId: string;
+  ownerIssuer: string;
+  ownerSubject: string;
+  ownerName?: string;
+  description: string;
+  template: ScheduleTemplate;
+  risk: string;
+  minIntervalSeconds: number;
+  meanIntervalSeconds: number;
+  window: ScheduleWindow;
+  expiresAt: string;
+  maxRuns: number;
+  runs: number;
+  consecutiveDenials: number;
+  state: 'Active' | 'Paused' | 'Finished' | 'Deleted';
+  stateReason?: string;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastExperimentId?: string;
+  createdAt: string;
+}
+
+export interface ScheduleRun {
+  id: number;
+  occurredAt: string;
+  outcome: 'Started' | 'Skipped' | 'Denied' | 'Failed';
+  experimentId?: string;
+  reason?: string;
 }

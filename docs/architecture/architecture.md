@@ -778,3 +778,94 @@ approval or step-up, because stopping is cheap to allow. Lock **release** is CLI
   per-cluster enum in policy that selects a template set. It is not free text.
 - Queries execute in the **operator** (in-cluster, close to Prometheus). Templates live
   in `pkg/chaosapi/metrics` and are unit-tested for injection resistance (fuzzed).
+
+---
+
+## 17. Scheduled chaos (Chaos Monkey style), as implemented
+
+**Goal:** practise resilience continuously, not only when someone remembers to run an
+experiment. A schedule runs an experiment template at **random times inside a weekly
+window**. As with Chaos Monkey, gaps have a mean and a minimum, and at most one run per
+schedule is active at a time.
+
+**Where it lives:** in the control plane (`backend/internal/schedules`), not the operator.
+Every run is an ordinary `POST /experiments`-equivalent (`experiments.Service.CreateWith`).
+It is policy-checked, lock-checked, approval-routed, audited (`experiment.create.scheduled`),
+mirrored into the UI and executed by the operator exactly like a one-off experiment.
+**Scheduling therefore adds no path around any existing gate.** The operator is unchanged.
+
+**Model** (`app.schedules`, append-only `app.schedule_runs`, `app.experiments.schedule_id`):
+
+| Field | Meaning |
+|-------|---------|
+| `template` | maxDuration, steps, successCriteria (same schema as experiments) |
+| `minInterval`, `meanInterval` | Gap = min + Exp(mean − min) (crypto/rand), capped at min + 10·(mean − min). Counted in **window time only** |
+| `window` | Days (Mon..Sun), from/to (HH:MM, same day), IANA time zone. DST-safe (wall clock) |
+| `expiresAt` | Required, at most 90 days. Schedules never live forever |
+| `maxRuns` | 0 = until expiry |
+
+**Admission** (`POST /api/v1/schedules`, experimenter role):
+- **Template:** passes the same checks as a one-off experiment now, using `Preflight`:
+  role, validation, `ChaosPolicy` and approval availability.
+- **Interval floor:** `minInterval` ≥ 1 min in development clusters and ≥ 1 h elsewhere.
+- **Step-up and confirmation:** high-risk templates need a fresh login, because nobody is
+  present for the runs. An explicit `confirm` is required (the UI also asks the user to
+  type the namespace).
+
+**Scheduler** (`Service.Tick`, every 10 s, in every control-plane replica):
+1. Load due Active schedules.
+2. Finish expired ones, and ones that reached `maxRuns`.
+3. Compute the next random time and **claim** the run with a compare-and-set on
+   `next_run_at`, so exactly one replica fires it. This is tested with 16 concurrent
+   claimers against Postgres.
+4. Fire:
+   - **Skipped** while the previous run of this schedule is not terminal, or while the
+     emergency stop is engaged.
+   - **Denied** if policy, role or validation refuses the run. After **3 consecutive
+     denials the schedule pauses itself** (for example, after a policy change).
+   - **Failed** if the cluster or approval service is unavailable.
+   - **Started** otherwise.
+   Every outcome is recorded in `schedule_runs`. Skips, failures and auto-pauses are
+   audited too.
+
+**Authority**:
+- **Who a run acts as:** runs are requested by the schedule's owner, authorized with the
+  owner's roles **snapshotted at creation**. Step-up is not re-checked per run; it was
+  required at creation.
+- **Approval-required policies:** each run goes to the approval service as a normal
+  request and waits in `PendingApproval`. Four-eyes therefore applies to every run.
+  Standing approvals (one attestation covering N runs) are future work.
+- **Pause and delete:** owner, approver or admin. Stopping is cheap to allow (D8).
+- **Resume:** owner only. It re-runs `Preflight` with the owner's *current* roles (which
+  become the new snapshot), re-checks policy, and requires step-up for high-risk templates.
+- **Deletion** is soft; history is kept.
+
+**Residual risk:**
+- A role revoked in the IdP still lets that owner's schedules run until they expire, are
+  paused, or the policy denies them.
+- Mitigations:
+  - the 90-day limit
+  - pausing by approvers or admins
+  - the emergency stop
+- Future: pause a subject's schedules from `sessions revoke`.
+
+**API:**
+- `GET/POST /api/v1/schedules`
+- `GET/DELETE /api/v1/schedules/{id}`
+- `POST /api/v1/schedules/{id}/pause|resume`
+
+**UI:**
+- The experiment form has a "Run once now / Run on a schedule" toggle.
+- A Schedules page lists schedules; the schedule detail page shows the window, the next
+  randomised run and the run history, with pause, resume and delete.
+- Experiments link back to their schedule.
+
+**Tests:**
+- Window maths: weekends, DST, rolling over days.
+- Sampler: bounds, cap and empirical mean.
+- Service: admission, firing through the pipeline, skips, auto-pause, maxRuns and expiry,
+  authorization, single firing under concurrency.
+- Postgres store: claim races, a pause beats a concurrent run, append-only history.
+- HTTP endpoints and UI specs.
+- `TestE2E_ScheduledChaos`: a schedule created through Keycloak and the API fires against
+  the real operator, and its experiment completes `Passed`.

@@ -16,11 +16,22 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { Router } from '@angular/router';
-import { ApiProblem, ClusterSummary, CreateExperimentRequest, Criterion, Scenario, Step } from '../../core/api.types';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import {
+  ApiProblem,
+  ClusterSummary,
+  CreateExperimentRequest,
+  CreateScheduleRequest,
+  Criterion,
+  Scenario,
+  Step,
+  Weekday,
+} from '../../core/api.types';
 import { BROWSER_LOCATION } from '../../core/auth.service';
 import { ExperimentsService } from '../../core/experiments.service';
 
 const DRAFT_KEY = 'kubechaos.experimentDraft';
+const SCHEDULE_DRAFT_KEY = 'kubechaos.scheduleDraft';
 const DURATION = /^([0-9]{1,4}(s|m|h)){1,3}$/;
 const LABEL = /^[A-Za-z0-9]([-A-Za-z0-9_./]{0,251}[A-Za-z0-9])?$/;
 
@@ -63,7 +74,7 @@ type CriterionForm = FormGroup<{
  */
 @Component({
   selector: 'kc-experiment-form',
-  imports: [ReactiveFormsModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatButtonModule, MatCardModule],
+  imports: [ReactiveFormsModule, MatFormFieldModule, MatInputModule, MatSelectModule, MatButtonModule, MatCardModule, MatButtonToggleModule],
   templateUrl: './experiment-form.html',
   styleUrl: './experiment-form.scss',
 })
@@ -88,6 +99,21 @@ export class ExperimentForm implements OnInit {
     confirmation: this.fb.control(''),
   });
 
+  /** 'once' runs now; 'schedule' creates a Chaos Monkey style schedule from the same template. */
+  readonly mode = signal<'once' | 'schedule'>('once');
+  protected readonly weekdays: Weekday[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  readonly schedule = this.fb.group({
+    name: this.fb.control('', [Validators.required, Validators.pattern(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/)]),
+    minInterval: this.fb.control('4h', [Validators.required, Validators.pattern(DURATION)]),
+    meanInterval: this.fb.control('12h', [Validators.required, Validators.pattern(DURATION)]),
+    days: this.fb.control<Weekday[]>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], [Validators.required]),
+    from: this.fb.control('10:00', [Validators.required, Validators.pattern(/^[0-2][0-9]:[0-5][0-9]$/)]),
+    to: this.fb.control('16:00', [Validators.required, Validators.pattern(/^[0-2][0-9]:[0-5][0-9]$/)]),
+    timeZone: this.fb.control(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', [Validators.required]),
+    expiresInDays: this.fb.control(30, [Validators.required, Validators.min(1), Validators.max(90)]),
+    maxRuns: this.fb.control(0, [Validators.min(0), Validators.max(1000)]),
+  });
+
   /** The user must type the target namespace(s) to confirm: deliberate friction, not security. */
   protected readonly targets = signal<string[]>([]);
   protected readonly confirmed = computed(() => this.targets().length > 0);
@@ -105,6 +131,7 @@ export class ExperimentForm implements OnInit {
     const draft = this.readDraft();
     if (draft) {
       this.load(draft);
+      this.restoreScheduleDraft();
     } else {
       this.addFault();
     }
@@ -193,6 +220,23 @@ export class ExperimentForm implements OnInit {
     return req;
   }
 
+  /** Builds the schedule request around the same experiment template. */
+  buildScheduleRequest(now = new Date()): CreateScheduleRequest {
+    const e = this.buildRequest();
+    const s = this.schedule.getRawValue();
+    return {
+      name: s.name,
+      description: e.description,
+      template: { maxDuration: e.maxDuration, steps: e.steps, successCriteria: e.successCriteria },
+      minInterval: s.minInterval,
+      meanInterval: s.meanInterval,
+      window: { days: s.days, from: s.from, to: s.to, timeZone: s.timeZone },
+      expiresAt: new Date(now.getTime() + Number(s.expiresInDays) * 86_400_000).toISOString(),
+      maxRuns: Number(s.maxRuns),
+      confirm: true,
+    };
+  }
+
   /** Namespaces the user must type to confirm. */
   targetNamespaces(): string[] {
     return [...new Set(this.form.getRawValue().steps.filter((s) => s.kind === 'fault').map((s) => s.namespace))];
@@ -204,22 +248,30 @@ export class ExperimentForm implements OnInit {
 
   submit(): void {
     this.problem.set(null);
+    const scheduled = this.mode() === 'schedule';
+    if (scheduled && this.schedule.invalid) {
+      this.schedule.markAllAsTouched();
+      return;
+    }
     if (this.form.invalid || !this.steps.controls.some((s) => s.controls.kind.value === 'fault') || !this.confirmationMatches()) {
       this.form.markAllAsTouched();
       return;
     }
     this.submitting.set(true);
-    this.api.create(this.buildRequest()).subscribe({
-      next: (exp) => {
-        this.clearDraft();
-        void this.router.navigate(['/experiments', exp.id]);
-      },
-      error: (err: HttpErrorResponse) => {
-        this.submitting.set(false);
-        const p: ApiProblem = typeof err.error === 'object' && err.error ? err.error : { title: 'Request failed', status: err.status };
-        this.problem.set(p);
-      },
-    });
+    const done = (path: string[]) => {
+      this.clearDraft();
+      void this.router.navigate(path);
+    };
+    const fail = (err: HttpErrorResponse) => {
+      this.submitting.set(false);
+      const p: ApiProblem = typeof err.error === 'object' && err.error ? err.error : { title: 'Request failed', status: err.status };
+      this.problem.set(p);
+    };
+    if (scheduled) {
+      this.api.createSchedule(this.buildScheduleRequest()).subscribe({ next: (s) => done(['/schedules', s.id]), error: fail });
+      return;
+    }
+    this.api.create(this.buildRequest()).subscribe({ next: (exp) => done(['/experiments', exp.id]), error: fail });
   }
 
   /** Step-up: save the draft, sign in again (forced re-authentication), come back here. */
@@ -231,8 +283,22 @@ export class ExperimentForm implements OnInit {
   private saveDraft(): void {
     try {
       sessionStorage.setItem(DRAFT_KEY, JSON.stringify(this.buildRequest()));
+      if (this.mode() === 'schedule') {
+        sessionStorage.setItem(SCHEDULE_DRAFT_KEY, JSON.stringify(this.schedule.getRawValue()));
+      }
     } catch {
       /* storage unavailable: the user re-enters the form */
+    }
+  }
+  private restoreScheduleDraft(): void {
+    try {
+      const raw = sessionStorage.getItem(SCHEDULE_DRAFT_KEY);
+      if (raw) {
+        this.schedule.patchValue(JSON.parse(raw));
+        this.mode.set('schedule');
+      }
+    } catch {
+      /* ignore */
     }
   }
   private readDraft(): CreateExperimentRequest | null {
@@ -246,6 +312,7 @@ export class ExperimentForm implements OnInit {
   private clearDraft(): void {
     try {
       sessionStorage.removeItem(DRAFT_KEY);
+      sessionStorage.removeItem(SCHEDULE_DRAFT_KEY);
     } catch {
       /* ignore */
     }

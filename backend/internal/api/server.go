@@ -15,6 +15,7 @@ import (
 	"github.com/kubechaos/kubechaos/backend/internal/events"
 	"github.com/kubechaos/kubechaos/backend/internal/experiments"
 	"github.com/kubechaos/kubechaos/backend/internal/httpx"
+	"github.com/kubechaos/kubechaos/backend/internal/schedules"
 )
 
 // Pinger reports database reachability for readiness checks.
@@ -28,6 +29,7 @@ type Deps struct {
 	DB           Pinger
 	Auth         *auth.Service
 	Experiments  *experiments.Service // nil when no cluster connector is configured
+	Schedules    *schedules.Service   // nil when no cluster connector is configured
 	Broker       *events.Broker
 	Audit        AuditReader
 	MaxBodyBytes int64
@@ -98,6 +100,18 @@ func NewRouter(d Deps) http.Handler {
 			r.With(need(authorization.ReadExperiments)).Get("/experiments/{id}/events", h.streamExperiment)
 			r.With(need(authorization.ReadLock)).Get("/system/lock", h.getLock)
 			r.With(need(authorization.EngageLock)).Post("/admin/lock", h.engageLock)
+
+			// Scheduled chaos. Pause/delete are authorized per schedule (owner, approver, admin).
+			r.Group(func(r chi.Router) {
+				r.Use(requireDep(d.Schedules != nil))
+				sh := &scheduleHandlers{handlers: h, svc: d.Schedules}
+				r.With(need(authorization.ReadExperiments)).Get("/schedules", sh.list)
+				r.With(need(authorization.CreateExperiment)).Post("/schedules", sh.create)
+				r.With(need(authorization.ReadExperiments)).Get("/schedules/{id}", sh.get)
+				r.With(need(authorization.ReadExperiments)).Delete("/schedules/{id}", sh.action(remove))
+				r.With(need(authorization.ReadExperiments)).Post("/schedules/{id}/pause", sh.action(pause))
+				r.With(need(authorization.CreateExperiment)).Post("/schedules/{id}/resume", sh.action(resume))
+			})
 		})
 	})
 

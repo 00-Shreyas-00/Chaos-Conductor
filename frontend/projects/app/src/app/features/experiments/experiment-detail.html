@@ -17,6 +17,9 @@
     {{ e.description || 'No description' }} · requested by {{ e.requesterName || e.requesterSubject }} ·
     risk {{ e.risk }} · cluster {{ e.clusterId }} · max {{ e.spec.maxDuration }}
   </p>
+  @if (e.scheduleId) {
+    <p class="meta" data-testid="schedule-link">Started by a <a [routerLink]="['/schedules', e.scheduleId]">schedule</a>.</p>
+  }
   @switch (e.state) {
     @case ('PendingApproval') {
       <p class="message" data-testid="approval">Waiting for approval by the namespace's approver group. Nothing runs until it is approved.</p>

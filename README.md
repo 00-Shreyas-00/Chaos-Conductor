@@ -17,6 +17,9 @@ acts on Kubernetes. There is no shell and no `kubectl` passthrough.
 - **Angular SPA:** experiments, the timeline, emergency stop and audit.
 - **Four-eyes approval:** a separate approval service and approver UI. Ed25519
   attestations are verified by the operator.
+- **Scheduled chaos (Chaos Monkey style):** opt-in schedules run an experiment at random
+  times inside a weekly window, with mean and minimum gaps. Every run goes through the
+  normal pipeline. See *New experiment → Run on a schedule* and the **Schedules** page.
 
 Next: more fault primitives, and Kubernetes deployment of the control plane and the
 approval service.

@@ -5,10 +5,13 @@ import {
   AuditRecord,
   ClusterSummary,
   CreateExperimentRequest,
+  CreateScheduleRequest,
   Experiment,
   FaultInfo,
   LockState,
   Scenario,
+  Schedule,
+  ScheduleRun,
   TimelineEvent,
 } from './api.types';
 
@@ -42,6 +45,23 @@ export class ExperimentsService {
 
   cancel(id: string): Observable<Experiment> {
     return this.http.post<Experiment>(`/api/v1/experiments/${encodeURIComponent(id)}/cancel`, null);
+  }
+
+  schedules(): Observable<Schedule[]> {
+    return this.http.get<{ items: Schedule[] }>('/api/v1/schedules').pipe(map((r) => r.items));
+  }
+
+  schedule(id: string): Observable<{ schedule: Schedule; runs: ScheduleRun[] }> {
+    return this.http.get<{ schedule: Schedule; runs: ScheduleRun[] }>(`/api/v1/schedules/${encodeURIComponent(id)}`);
+  }
+
+  createSchedule(req: CreateScheduleRequest): Observable<Schedule> {
+    return this.http.post<Schedule>('/api/v1/schedules', req);
+  }
+
+  scheduleAction(id: string, action: 'pause' | 'resume' | 'delete'): Observable<Schedule> {
+    const url = `/api/v1/schedules/${encodeURIComponent(id)}`;
+    return action === 'delete' ? this.http.delete<Schedule>(url) : this.http.post<Schedule>(`${url}/${action}`, null);
   }
 
   faults(): Observable<FaultInfo[]> {

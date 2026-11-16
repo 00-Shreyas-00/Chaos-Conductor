@@ -219,6 +219,91 @@ paths:
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/schedules:
+    get:
+      operationId: listSchedules
+      summary: Scheduled chaos (not deleted), newest first
+      parameters: [{ name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200 } }]
+      responses:
+        "200": { description: Schedules, content: { application/json: { schema: { type: object } } } }
+    post:
+      operationId: createSchedule
+      summary: Create a Chaos Monkey style schedule (experimenter)
+      description: |
+        Runs `template` at random times inside `window`: gaps are minInterval plus an exponential
+        draw with mean meanInterval (window time only). The template must pass policy now;
+        high-risk templates need a fresh login (step-up). Expires after at most 90 days. Each run
+        goes through the full experiment pipeline and is skipped while the previous run is
+        active or the emergency stop is engaged; 3 consecutive denials pause the schedule.
+      parameters: [{ $ref: "#/components/parameters/CSRFHeader" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, template, minInterval, meanInterval, window, expiresAt, confirm]
+              properties:
+                name: { type: string, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
+                description: { type: string, maxLength: 500 }
+                template: { type: object, description: "maxDuration, steps, successCriteria (as for experiments)" }
+                minInterval: { type: string, example: 6h }
+                meanInterval: { type: string, example: 12h }
+                window:
+                  type: object
+                  properties:
+                    days: { type: array, items: { type: string, enum: [Mon, Tue, Wed, Thu, Fri, Sat, Sun] } }
+                    from: { type: string, example: "10:00" }
+                    to: { type: string, example: "16:00" }
+                    timeZone: { type: string, example: Europe/London }
+                expiresAt: { type: string, format: date-time }
+                maxRuns: { type: integer, minimum: 0, maximum: 1000 }
+                confirm: { type: boolean }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /api/v1/schedules/{id}:
+    get:
+      operationId: getSchedule
+      summary: Schedule and its run history
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { description: Schedule and runs, content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteSchedule
+      summary: End a schedule permanently (owner, approver or admin); history is kept
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/CSRFHeader" }]
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { type: object } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/schedules/{id}/pause:
+    post:
+      operationId: pauseSchedule
+      summary: Stop future runs (owner, approver or admin; cheap to allow)
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/CSRFHeader" }]
+      responses:
+        "200": { description: Paused, content: { application/json: { schema: { type: object } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/schedules/{id}/resume:
+    post:
+      operationId: resumeSchedule
+      summary: Resume a paused schedule (owner only; re-checks policy and current roles; step-up for high risk)
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/CSRFHeader" }]
+      responses:
+        "200": { description: Active again, content: { application/json: { schema: { type: object } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
   /api/v1/experiments/{id}/events:
     get:
       operationId: streamExperiment
