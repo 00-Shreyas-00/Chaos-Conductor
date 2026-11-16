@@ -22,9 +22,9 @@ var _ auth.Store = (*SessionStore)(nil)
 
 func (s *SessionStore) CreateLoginRequest(ctx context.Context, lr auth.LoginRequest) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO app.login_requests (state_hash, nonce, pkce_verifier, return_to, expires_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		lr.StateHash, lr.Nonce, lr.PKCEVerifier, lr.ReturnTo, lr.ExpiresAt)
+		INSERT INTO app.login_requests (state_hash, nonce, pkce_verifier, return_to, step_up, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		lr.StateHash, lr.Nonce, lr.PKCEVerifier, lr.ReturnTo, lr.StepUp, lr.ExpiresAt)
 	return err
 }
 
@@ -34,8 +34,8 @@ func (s *SessionStore) ConsumeLoginRequest(ctx context.Context, stateHash []byte
 	err := s.pool.QueryRow(ctx, `
 		DELETE FROM app.login_requests
 		WHERE state_hash = $1
-		RETURNING nonce, pkce_verifier, return_to, expires_at`, stateHash).
-		Scan(&lr.Nonce, &lr.PKCEVerifier, &lr.ReturnTo, &lr.ExpiresAt)
+		RETURNING nonce, pkce_verifier, return_to, step_up, expires_at`, stateHash).
+		Scan(&lr.Nonce, &lr.PKCEVerifier, &lr.ReturnTo, &lr.StepUp, &lr.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lr, auth.ErrNotFound
 	}

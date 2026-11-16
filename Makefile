@@ -75,7 +75,9 @@ BACKEND_DEV_ENV = set -a; . ./.env; set +a; export KUBECHAOS_ENV=development; \
 	export KUBECHAOS_PUBLIC_URL="$${KUBECHAOS_PUBLIC_URL:-http://localhost:4200}"; \
 	export KUBECHAOS_OIDC_ISSUER="http://localhost:8180/realms/kubechaos"; \
 	export KUBECHAOS_OIDC_CLIENT_ID="kubechaos-api"; \
-	export KUBECHAOS_HTTP_ADDR="$${KUBECHAOS_HTTP_ADDR:-0.0.0.0:8080}"
+	export KUBECHAOS_HTTP_ADDR="$${KUBECHAOS_HTTP_ADDR:-0.0.0.0:8080}"; \
+	if [ -f .kube/control-plane.kubeconfig ]; then export KUBECHAOS_KUBECONFIG="$$PWD/.kube/control-plane.kubeconfig" \
+	  KUBECHAOS_CLUSTER_ID=dev-kind-01 KUBECHAOS_CLUSTER_NAME="kind (development)"; fi
 
 .PHONY: test
 test: ## Run Go unit tests
@@ -175,6 +177,16 @@ operator-verify: ## Check the deployed operator's effective RBAC against expecta
 .PHONY: crd-verify
 crd-verify: ## Check ChaosExperiment validation, immutability and admission policy against kind
 	@bash scripts/verify-crd.sh
+
+.PHONY: cp-kubeconfig
+cp-kubeconfig: ## Write .kube/control-plane.kubeconfig (control-plane SA, 24h token) for make api
+	@mkdir -p .kube; umask 077; \
+	token=$$($(KUBECTL) -n kubechaos-system create token kubechaos-control-plane --duration=24h); \
+	server=$$($(KUBECTL) config view --minify -o jsonpath='{.clusters[0].cluster.server}'); \
+	ca=$$($(KUBECTL) config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kind\n  cluster:\n    server: %s\n    certificate-authority-data: %s\nusers:\n- name: kubechaos-control-plane\n  user:\n    token: %s\ncontexts:\n- name: control-plane\n  context: {cluster: kind, user: kubechaos-control-plane}\ncurrent-context: control-plane\n' \
+	  "$$server" "$$ca" "$$token" > .kube/control-plane.kubeconfig; \
+	echo "wrote .kube/control-plane.kubeconfig (ServiceAccount kubechaos-control-plane, expires in 24h)"
 
 .PHONY: kubechaosctl
 kubechaosctl: ## Build the break-glass admin CLI into bin/kubechaosctl

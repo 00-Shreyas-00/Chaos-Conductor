@@ -158,16 +158,17 @@ type FakeIdP struct {
 	LastNonce    string
 	LastVerifier string
 	LastCode     string
+	LastStepUp   bool
 	LogoutTokens map[string]auth.LogoutToken
 }
 
-func (f *FakeIdP) AuthCodeURL(_ context.Context, state, nonce, verifier string) (string, error) {
+func (f *FakeIdP) AuthCodeURL(_ context.Context, state, nonce, verifier string, stepUp bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.AuthURLErr != nil {
 		return "", f.AuthURLErr
 	}
-	f.LastState, f.LastNonce, f.LastVerifier = state, nonce, verifier
+	f.LastState, f.LastNonce, f.LastVerifier, f.LastStepUp = state, nonce, verifier, stepUp
 	return "https://idp.test/authorize?state=" + url.QueryEscape(state), nil
 }
 

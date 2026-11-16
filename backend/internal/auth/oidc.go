@@ -38,7 +38,9 @@ type LogoutToken struct {
 // IdP is the identity provider as seen by the login flow. The production implementation is
 // OIDC (Keycloak); tests use a fake.
 type IdP interface {
-	AuthCodeURL(ctx context.Context, state, nonce, pkceVerifier string) (string, error)
+	// AuthCodeURL builds the authorization URL. stepUp forces a fresh interactive login
+	// (prompt=login, max_age=0) so the resulting auth_time proves the user just authenticated.
+	AuthCodeURL(ctx context.Context, state, nonce, pkceVerifier string, stepUp bool) (string, error)
 	// Exchange redeems an authorization code and returns *verified* ID-token claims.
 	Exchange(ctx context.Context, code, pkceVerifier string) (Claims, error)
 	EndSessionURL(ctx context.Context, postLogoutRedirect string) (string, error)
@@ -110,12 +112,16 @@ func (o *oidcIdP) oauth2Config(p *oidc.Provider) *oauth2.Config {
 	}
 }
 
-func (o *oidcIdP) AuthCodeURL(ctx context.Context, state, nonce, verifier string) (string, error) {
+func (o *oidcIdP) AuthCodeURL(ctx context.Context, state, nonce, verifier string, stepUp bool) (string, error) {
 	p, err := o.get(ctx)
 	if err != nil {
 		return "", err
 	}
-	return o.oauth2Config(p).AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), nil
+	opts := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if stepUp {
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+	}
+	return o.oauth2Config(p).AuthCodeURL(state, opts...), nil
 }
 
 func (o *oidcIdP) Exchange(ctx context.Context, code, verifier string) (Claims, error) {

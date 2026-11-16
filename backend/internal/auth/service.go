@@ -4,9 +4,13 @@
 package auth
 
 import (
+	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -15,6 +19,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/kubechaos/kubechaos/backend/internal/audit"
 	"github.com/kubechaos/kubechaos/backend/internal/httpx"
 )
 
@@ -62,6 +67,35 @@ type Service struct {
 	idp    IdP
 	log    *slog.Logger
 	now    func() time.Time
+	// Auditor receives authentication events. Nil means no audit sink (tests only).
+	Auditor Auditor
+}
+
+// Auditor records security events (the audit package's Writer satisfies it).
+type Auditor interface {
+	Append(ctx context.Context, e audit.Event) error
+}
+
+func (s *Service) audit(ctx context.Context, e audit.Event) error {
+	if s.Auditor == nil {
+		return nil
+	}
+	return s.Auditor.Append(ctx, e)
+}
+
+// clientIP is the TCP peer address. Proxy headers are not trusted until a trusted-proxy list
+// is configured (they are client-controlled).
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || net.ParseIP(host) == nil {
+		return ""
+	}
+	return host
+}
+
+func rolesJSON(roles []Role) json.RawMessage {
+	b, _ := json.Marshal(map[string]any{"roles": roles})
+	return b
 }
 
 // NewService builds a Service.
@@ -87,8 +121,9 @@ func NewService(cfg Config, store Store, idp IdP, logger *slog.Logger) *Service 
 func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	state, nonce, verifier := newToken(), newToken(), oauth2.GenerateVerifier()
+	stepUp := r.URL.Query().Get("stepUp") == "1"
 
-	authURL, err := s.idp.AuthCodeURL(ctx, state, nonce, verifier)
+	authURL, err := s.idp.AuthCodeURL(ctx, state, nonce, verifier, stepUp)
 	if err != nil {
 		s.log.ErrorContext(ctx, "login: identity provider unavailable", reqID(r), slog.Any("error", err))
 		httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "Service Unavailable", "identity provider unavailable")
@@ -99,6 +134,7 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		Nonce:        nonce,
 		PKCEVerifier: verifier,
 		ReturnTo:     SafeReturnTo(r.URL.Query().Get("returnTo")),
+		StepUp:       stepUp,
 		ExpiresAt:    s.now().Add(s.cfg.LoginTTL),
 	})
 	if err != nil {
@@ -152,6 +188,11 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 		fail("id_token without sub/iss", nil)
 		return
 	}
+	// Step-up: the IdP must prove a fresh interactive authentication (auth_time), not reuse SSO.
+	if lr.StepUp && (claims.AuthTime == nil || s.now().Sub(*claims.AuthTime) > 2*time.Minute || claims.AuthTime.After(s.now().Add(time.Minute))) {
+		fail("step-up requested but the identity provider did not re-authenticate the user", nil)
+		return
+	}
 
 	display := claims.Name
 	if display == "" {
@@ -188,13 +229,24 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 		fail("store session", err)
 		return
 	}
+	action := "auth.login"
+	if lr.StepUp {
+		action = "auth.step_up"
+	}
+	// Fail closed: a login that cannot be audited does not happen.
+	if err := s.audit(ctx, audit.Event{Action: action, ActorIssuer: claims.Issuer, ActorSubject: claims.Subject,
+		ActorName: truncate(display, 255), AuthLevel: claims.ACR, SourceIP: clientIP(r), Result: "success",
+		Parameters: rolesJSON(roles)}); err != nil {
+		_ = s.store.DeleteSession(ctx, hashToken(token))
+		fail("audit write failed", err)
+		return
+	}
 
 	http.SetCookie(w, s.sessionCookie(token, int(maxAge.Seconds())))
 	s.log.InfoContext(ctx, "login succeeded", reqID(r),
 		slog.String("issuer", claims.Issuer), slog.String("subject", claims.Subject),
-		slog.Any("roles", roles), slog.String("acr", claims.ACR),
+		slog.Any("roles", roles), slog.String("acr", claims.ACR), slog.Bool("step_up", lr.StepUp),
 		slog.Duration("session_idle_timeout", idle), slog.Duration("session_max_age", maxAge))
-	// TODO(step 14): emit audit event auth.login.
 	http.Redirect(w, r, lr.ReturnTo, http.StatusFound)
 }
 
@@ -218,6 +270,10 @@ func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	if p, ok := PrincipalFrom(ctx); ok {
 		s.log.InfoContext(ctx, "logout", reqID(r), slog.String("subject", p.Subject))
+		if err := s.audit(ctx, audit.Event{Action: "auth.logout", ActorIssuer: p.Issuer, ActorSubject: p.Subject,
+			ActorName: p.DisplayName, SourceIP: clientIP(r), Result: "success"}); err != nil {
+			s.log.ErrorContext(ctx, "audit write failed for logout", reqID(r), slog.Any("error", err))
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"logoutUrl": logoutURL})
 }
@@ -280,7 +336,10 @@ func (s *Service) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
 	s.log.InfoContext(ctx, "back-channel logout", reqID(r),
 		slog.String("issuer", lt.Issuer), slog.String("subject", lt.Subject),
 		slog.String("scope", scope), slog.Int64("sessions_revoked", n))
-	// TODO(step 14): emit audit event auth.session.revoked.
+	if err := s.audit(ctx, audit.Event{Action: "auth.session.revoked", ActorIssuer: lt.Issuer, ActorSubject: lt.Subject,
+		ActorName: "identity-provider", Result: fmt.Sprintf("back-channel logout (%s): %d session(s) revoked", scope, n)}); err != nil {
+		s.log.ErrorContext(ctx, "audit write failed for back-channel logout", reqID(r), slog.Any("error", err))
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

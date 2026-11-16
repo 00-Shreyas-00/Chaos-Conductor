@@ -15,7 +15,9 @@ type LoginRequest struct {
 	Nonce        string
 	PKCEVerifier string
 	ReturnTo     string
-	ExpiresAt    time.Time
+	// StepUp requires the callback's ID token to prove a fresh interactive authentication.
+	StepUp    bool
+	ExpiresAt time.Time
 }
 
 // Identity is an IdP subject as recorded by the application.

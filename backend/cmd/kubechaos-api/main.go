@@ -20,8 +20,12 @@ import (
 	"time"
 
 	"github.com/kubechaos/kubechaos/backend/internal/api"
+	"github.com/kubechaos/kubechaos/backend/internal/audit"
 	"github.com/kubechaos/kubechaos/backend/internal/auth"
+	"github.com/kubechaos/kubechaos/backend/internal/clusters"
 	"github.com/kubechaos/kubechaos/backend/internal/config"
+	"github.com/kubechaos/kubechaos/backend/internal/events"
+	"github.com/kubechaos/kubechaos/backend/internal/experiments"
 	"github.com/kubechaos/kubechaos/backend/internal/logging"
 	"github.com/kubechaos/kubechaos/backend/internal/repository"
 )
@@ -46,6 +50,8 @@ func run(args []string) int {
 		err = serve(ctx)
 	case args[0] == "migrate" && len(args) == 2 && (args[1] == "up" || args[1] == "status"):
 		err = migrate(ctx, args[1])
+	case args[0] == "audit" && len(args) == 2 && args[1] == "verify":
+		err = verifyAudit(ctx)
 	case args[0] == "sessions" && len(args) >= 2 && args[1] == "revoke":
 		var usage bool
 		usage, err = revokeSessions(ctx, args[2:])
@@ -108,11 +114,36 @@ func serve(ctx context.Context) error {
 		ClientSecret: cfg.OIDCClientSecret,
 		RedirectURL:  cfg.PublicURL.String() + "/auth/callback",
 	}), logger)
+	auditWriter := audit.NewWriter(pool)
+	authSvc.Auditor = auditWriter
 	go purgeExpiredSessions(ctx, sessions, logger)
+
+	deps := api.Deps{Logger: logger, DB: pool, Auth: authSvc, Audit: api.PGAuditReader{Pool: pool},
+		MaxBodyBytes: cfg.MaxBodyBytes, Version: version}
+	if cfg.KubeconfigPath != "" {
+		conn, err := clusters.NewCRDConnector(cfg.KubeconfigPath, cfg.ClusterID, logger)
+		if err != nil {
+			return fmt.Errorf("cluster connector: %w", err)
+		}
+		store := repository.NewExperimentStore(pool, auditWriter)
+		env := "development"
+		if pol, err := conn.Policy(ctx); err == nil && pol != nil {
+			env = pol.Spec.Environment
+		}
+		if err := store.EnsureCluster(ctx, cfg.ClusterID, cfg.ClusterName, env); err != nil {
+			return fmt.Errorf("register cluster: %w", err)
+		}
+		deps.Broker = events.NewBroker(5)
+		deps.Experiments = &experiments.Service{Store: store, Conn: conn, Audit: auditWriter, Broker: deps.Broker, Log: logger}
+		go deps.Experiments.Run(ctx) // mirror cluster status into the DB and to SSE subscribers
+		logger.Info("cluster connector enabled", slog.String("cluster", cfg.ClusterID))
+	} else {
+		logger.Warn("no KUBECHAOS_KUBECONFIG: experiment endpoints are disabled (503)")
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Logger: logger, DB: pool, Auth: authSvc, MaxBodyBytes: cfg.MaxBodyBytes, Version: version}),
+		Handler:           api.NewRouter(deps),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second, // SSE handlers will extend per-request via http.ResponseController
@@ -139,6 +170,26 @@ func serve(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// verifyAudit walks the whole audit hash chain (break-glass / control node).
+func verifyAudit(ctx context.Context) error {
+	cfg, err := config.LoadAdmin(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	pool, err := repository.Connect(ctx, cfg.DatabaseURL, repository.PoolOptions{
+		MaxConns: 1, ApplicationName: "kubechaos-audit-verify", RequireTLS: cfg.Environment != config.EnvDevelopment})
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	res, err := audit.Verify(ctx, pool)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("audit chain OK: %d event(s), head %s\n", res.Events, res.Head)
+	return nil
 }
 
 // purgeExpiredSessions removes expired sessions and login requests every 10 minutes.

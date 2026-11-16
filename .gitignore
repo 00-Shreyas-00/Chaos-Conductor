@@ -3,6 +3,8 @@
 *.pem
 *.key
 kubeconfig*
+*.kubeconfig
+.kube/
 
 # Go
 /bin/

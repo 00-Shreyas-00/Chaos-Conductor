@@ -11,6 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kubechaos/kubechaos/backend/internal/auth"
+	"github.com/kubechaos/kubechaos/backend/internal/authorization"
+	"github.com/kubechaos/kubechaos/backend/internal/events"
+	"github.com/kubechaos/kubechaos/backend/internal/experiments"
 	"github.com/kubechaos/kubechaos/backend/internal/httpx"
 )
 
@@ -24,6 +27,9 @@ type Deps struct {
 	Logger       *slog.Logger
 	DB           Pinger
 	Auth         *auth.Service
+	Experiments  *experiments.Service // nil when no cluster connector is configured
+	Broker       *events.Broker
+	Audit        AuditReader
 	MaxBodyBytes int64
 	Version      string
 }
@@ -72,9 +78,43 @@ func NewRouter(d Deps) http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(d.Auth.RequireSession, d.Auth.RequireCSRF)
 		r.Get("/me", getMe)
+
+		h := &handlers{exp: d.Experiments, broker: d.Broker, audit: d.Audit, log: d.Logger}
+		need := h.require
+		r.With(need(authorization.ReadCatalog)).Get("/faults", h.listFaults)
+		r.With(need(authorization.ReadCatalog)).Get("/scenarios", h.listScenarios)
+		r.With(need(authorization.ReadAudit), requireDep(d.Audit != nil)).Get("/audit", h.listAudit)
+		r.With(need(authorization.ReadAudit), requireDep(d.Audit != nil)).Get("/audit/verify", h.verifyAudit)
+
+		// Everything below needs the cluster connector; without it, fail closed with 503.
+		r.Group(func(r chi.Router) {
+			r.Use(requireDep(d.Experiments != nil && d.Broker != nil))
+			r.With(need(authorization.ReadClusters)).Get("/clusters", h.listClusters)
+			r.With(need(authorization.ReadClusters)).Get("/clusters/{id}", h.getCluster)
+			r.With(need(authorization.ReadExperiments)).Get("/experiments", h.listExperiments)
+			r.With(need(authorization.CreateExperiment)).Post("/experiments", h.createExperiment)
+			r.With(need(authorization.ReadExperiments)).Get("/experiments/{id}", h.getExperiment)
+			r.With(need(authorization.ReadExperiments)).Post("/experiments/{id}/cancel", h.cancelExperiment)
+			r.With(need(authorization.ReadExperiments)).Get("/experiments/{id}/events", h.streamExperiment)
+			r.With(need(authorization.ReadLock)).Get("/system/lock", h.getLock)
+			r.With(need(authorization.EngageLock)).Post("/admin/lock", h.engageLock)
+		})
 	})
 
 	return r
+}
+
+// requireDep returns 503 when a dependency is not configured (fail closed).
+func requireDep(ok bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !ok {
+				httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "Service Unavailable", "not configured")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 type currentUser struct {

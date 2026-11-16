@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,11 @@ type Server struct {
 	OIDCIssuer       string
 	OIDCClientID     string
 	OIDCClientSecret string
+
+	// Cluster connector (optional). Without it, experiment endpoints return 503 (fail closed).
+	KubeconfigPath string // the control-plane ServiceAccount's kubeconfig; never logged
+	ClusterID      string
+	ClusterName    string
 }
 
 // validURL enforces an absolute http(s) URL without credentials, query or fragment.
@@ -127,8 +133,21 @@ func LoadServer(getenv func(string) string) (Server, error) {
 	if len(c.OIDCClientSecret) < 32 {
 		errs = append(errs, errors.New("KUBECHAOS_OIDC_CLIENT_SECRET is required (min 32 characters)"))
 	}
+	c.KubeconfigPath = getenv("KUBECHAOS_KUBECONFIG")
+	if c.KubeconfigPath != "" {
+		c.ClusterID = getenv("KUBECHAOS_CLUSTER_ID")
+		if !clusterIDRe.MatchString(c.ClusterID) {
+			errs = append(errs, errors.New("KUBECHAOS_CLUSTER_ID must be a DNS-1123 label when KUBECHAOS_KUBECONFIG is set"))
+		}
+		c.ClusterName = withDefault(getenv("KUBECHAOS_CLUSTER_NAME"), c.ClusterID)
+		if len(c.ClusterName) > 128 {
+			errs = append(errs, errors.New("KUBECHAOS_CLUSTER_NAME must be at most 128 characters"))
+		}
+	}
 	return c, errors.Join(errs...)
 }
+
+var clusterIDRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // Admin is the configuration for break-glass admin commands (e.g. `sessions revoke`).
 // They need only the database, so they keep working when the IdP or web tier is down.

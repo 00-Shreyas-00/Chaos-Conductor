@@ -13,8 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubechaos/kubechaos/backend/internal/audit"
 	"github.com/kubechaos/kubechaos/backend/internal/auth"
 	"github.com/kubechaos/kubechaos/backend/internal/auth/authtest"
+	"github.com/kubechaos/kubechaos/backend/internal/clusters/clusterstest"
+	"github.com/kubechaos/kubechaos/backend/internal/events"
+	"github.com/kubechaos/kubechaos/backend/internal/experiments"
 	"github.com/kubechaos/kubechaos/backend/internal/httpx"
 )
 
@@ -31,7 +35,26 @@ func newAuth(store auth.Store, idp auth.IdP) *auth.Service {
 }
 
 func newRouter(db Pinger, a *auth.Service) http.Handler {
-	return NewRouter(Deps{Logger: discardLogger(), DB: db, Auth: a, MaxBodyBytes: 1024, Version: "test"})
+	h, _, _ := newRouterWithCluster(db, a)
+	return h
+}
+
+// newRouterWithCluster wires the experiment endpoints to an in-memory store and fake cluster.
+func newRouterWithCluster(db Pinger, a *auth.Service) (http.Handler, *experiments.MemStore, *clusterstest.Fake) {
+	store, conn := experiments.NewMemStore(), clusterstest.New()
+	broker := events.NewBroker(2)
+	svc := &experiments.Service{Store: store, Conn: conn, Audit: store, Broker: broker, Log: discardLogger()}
+	return NewRouter(Deps{Logger: discardLogger(), DB: db, Auth: a, Experiments: svc, Broker: broker,
+		Audit: fakeAudit{}, MaxBodyBytes: 64 << 10, Version: "test"}), store, conn
+}
+
+type fakeAudit struct{}
+
+func (fakeAudit) List(*http.Request, int, int64) ([]audit.Record, error) {
+	return []audit.Record{{Seq: 1, Event: audit.Event{Action: "auth.login"}}}, nil
+}
+func (fakeAudit) Verify(*http.Request) (audit.VerifyResult, error) {
+	return audit.VerifyResult{Events: 1}, nil
 }
 
 func newTestServer(t *testing.T, db Pinger) *httptest.Server {
@@ -107,8 +130,8 @@ func TestAuthenticatedUnsafeRequestsNeedCSRF(t *testing.T) {
 	if c := do("https://evil.example", csrf); c != http.StatusForbidden {
 		t.Errorf("foreign origin: %d", c)
 	}
-	// Valid CSRF reaches routing; the route does not exist yet.
-	if c := do("http://localhost:4200", csrf); c != http.StatusNotFound && c != http.StatusMethodNotAllowed {
+	// Valid CSRF reaches the handler, which rejects the empty body as invalid.
+	if c := do("http://localhost:4200", csrf); c != http.StatusBadRequest {
 		t.Errorf("valid csrf: %d", c)
 	}
 }
