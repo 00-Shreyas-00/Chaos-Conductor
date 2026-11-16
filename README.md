@@ -45,6 +45,7 @@ http://localhost:8180 (`KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`). After
 - [Architecture](docs/architecture/architecture.md)
 - [Resolved decisions](docs/architecture/decisions.md)
 - [Threat model](docs/security/threat-model.md)
+- [Suggestions: lessons from Chaos Monkey and beyond](docs/roadmap/suggestions.md)
 
 ## Repository layout
 | Path | Purpose |
