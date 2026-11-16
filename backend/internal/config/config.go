@@ -52,6 +52,10 @@ type Server struct {
 	KubeconfigPath string // the control-plane ServiceAccount's kubeconfig; never logged
 	ClusterID      string
 	ClusterName    string
+
+	// Approval service (optional). Without it, approval-required experiments are denied.
+	ApproverURL   string // internal base URL, e.g. http://127.0.0.1:8081
+	ApproverToken string // service token; never logged
 }
 
 // validURL enforces an absolute http(s) URL without credentials, query or fragment.
@@ -142,6 +146,17 @@ func LoadServer(getenv func(string) string) (Server, error) {
 		c.ClusterName = withDefault(getenv("KUBECHAOS_CLUSTER_NAME"), c.ClusterID)
 		if len(c.ClusterName) > 128 {
 			errs = append(errs, errors.New("KUBECHAOS_CLUSTER_NAME must be at most 128 characters"))
+		}
+	}
+	if v := getenv("KUBECHAOS_APPROVER_URL"); v != "" {
+		u, err := url.Parse(v)
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || (u.Scheme != "https" && !(u.Scheme == "http" && env == EnvDevelopment)) {
+			errs = append(errs, errors.New("KUBECHAOS_APPROVER_URL must be an https URL (http only in development)"))
+		}
+		c.ApproverURL = strings.TrimRight(v, "/")
+		c.ApproverToken = getenv("KUBECHAOS_APPROVER_SERVICE_TOKEN")
+		if len(c.ApproverToken) < 32 {
+			errs = append(errs, errors.New("KUBECHAOS_APPROVER_SERVICE_TOKEN is required with KUBECHAOS_APPROVER_URL (min 32 characters)"))
 		}
 	}
 	return c, errors.Join(errs...)

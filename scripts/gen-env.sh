@@ -24,3 +24,8 @@ ensure KEYCLOAK_ADMIN_PASSWORD "$(rand)"
 ensure KUBECHAOS_OIDC_CLIENT_SECRET "$(rand)"
 # Password for the seeded dev users (alice, bob, carol, dave, eve, mallory).
 ensure KEYCLOAK_DEV_USER_PASSWORD "$(rand)"
+# Approval service (separate trust domain): its own OIDC client secret, the control plane's
+# service token for its internal API, and the Ed25519 seed for signing attestations.
+ensure KUBECHAOS_APPROVER_OIDC_CLIENT_SECRET "$(rand)"
+ensure KUBECHAOS_APPROVER_SERVICE_TOKEN "$(openssl rand -hex 32)"
+ensure KUBECHAOS_APPROVER_SIGNING_SEED "$(openssl rand -hex 32)"

@@ -25,11 +25,34 @@
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
   "groups": [
-    { "name": "kubechaos-viewer" },
-    { "name": "kubechaos-experimenter" },
-    { "name": "kubechaos-approver" },
-    { "name": "kubechaos-admin" },
-    { "name": "kubechaos-auditor" }
+    {
+      "name": "kubechaos-viewer"
+    },
+    {
+      "name": "kubechaos-experimenter"
+    },
+    {
+      "name": "kubechaos-approver"
+    },
+    {
+      "name": "kubechaos-admin"
+    },
+    {
+      "name": "kubechaos-auditor"
+    },
+    {
+      "name": "teams",
+      "subGroups": [
+        {
+          "name": "demo",
+          "subGroups": [
+            {
+              "name": "head-developers"
+            }
+          ]
+        }
+      ]
+    }
   ],
   "clients": [
     {
@@ -60,7 +83,12 @@
         "backchannel.logout.session.required": "true",
         "backchannel.logout.revoke.offline.tokens": "false"
       },
-      "defaultClientScopes": ["basic", "profile", "email", "acr"],
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email",
+        "acr"
+      ],
       "optionalClientScopes": [],
       "protocolMappers": [
         {
@@ -77,43 +105,166 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "kubechaos-approver",
+      "name": "KubeChaos approval service (BFF)",
+      "description": "Separate confidential client for approvers. Groups are sent as full paths for approval routing.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KUBECHAOS_APPROVER_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "http://localhost:4201/auth/callback",
+        "http://localhost:8081/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:4201/##http://localhost:8081/",
+        "backchannel.logout.url": "http://kubechaos-api.internal:8081/auth/backchannel-logout",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email",
+        "acr"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
     {
-      "username": "alice", "firstName": "Alice", "lastName": "Experimenter",
-      "email": "alice@kubechaos.test", "emailVerified": true, "enabled": true,
-      "credentials": [{ "type": "password", "value": "${KEYCLOAK_DEV_USER_PASSWORD}", "temporary": false }],
-      "groups": ["/kubechaos-experimenter"]
+      "username": "alice",
+      "firstName": "Alice",
+      "lastName": "Experimenter",
+      "email": "alice@kubechaos.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kubechaos-experimenter"
+      ]
     },
     {
-      "username": "bob", "firstName": "Bob", "lastName": "Approver",
-      "email": "bob@kubechaos.test", "emailVerified": true, "enabled": true,
-      "credentials": [{ "type": "password", "value": "${KEYCLOAK_DEV_USER_PASSWORD}", "temporary": false }],
-      "groups": ["/kubechaos-approver"]
+      "username": "bob",
+      "firstName": "Bob",
+      "lastName": "Approver",
+      "email": "bob@kubechaos.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kubechaos-approver",
+        "/teams/demo/head-developers"
+      ]
     },
     {
-      "username": "carol", "firstName": "Carol", "lastName": "Admin",
-      "email": "carol@kubechaos.test", "emailVerified": true, "enabled": true,
-      "credentials": [{ "type": "password", "value": "${KEYCLOAK_DEV_USER_PASSWORD}", "temporary": false }],
-      "groups": ["/kubechaos-admin"]
+      "username": "carol",
+      "firstName": "Carol",
+      "lastName": "Admin",
+      "email": "carol@kubechaos.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kubechaos-admin",
+        "/teams/demo/head-developers"
+      ]
     },
     {
-      "username": "dave", "firstName": "Dave", "lastName": "Auditor",
-      "email": "dave@kubechaos.test", "emailVerified": true, "enabled": true,
-      "credentials": [{ "type": "password", "value": "${KEYCLOAK_DEV_USER_PASSWORD}", "temporary": false }],
-      "groups": ["/kubechaos-auditor"]
+      "username": "dave",
+      "firstName": "Dave",
+      "lastName": "Auditor",
+      "email": "dave@kubechaos.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kubechaos-auditor"
+      ]
     },
     {
-      "username": "eve", "firstName": "Eve", "lastName": "Viewer",
-      "email": "eve@kubechaos.test", "emailVerified": true, "enabled": true,
-      "credentials": [{ "type": "password", "value": "${KEYCLOAK_DEV_USER_PASSWORD}", "temporary": false }],
-      "groups": ["/kubechaos-viewer"]
+      "username": "eve",
+      "firstName": "Eve",
+      "lastName": "Viewer",
+      "email": "eve@kubechaos.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kubechaos-viewer"
+      ]
     },
     {
-      "username": "mallory", "firstName": "Mallory", "lastName": "NoRoles",
-      "email": "mallory@kubechaos.test", "emailVerified": true, "enabled": true,
-      "credentials": [{ "type": "password", "value": "${KEYCLOAK_DEV_USER_PASSWORD}", "temporary": false }],
+      "username": "mallory",
+      "firstName": "Mallory",
+      "lastName": "NoRoles",
+      "email": "mallory@kubechaos.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
       "groups": []
     }
   ]

@@ -31,7 +31,9 @@ type Service struct {
 	Audit  Auditor
 	Broker *events.Broker
 	Log    *slog.Logger
-	Now    func() time.Time
+	// Approvals is the approval service client; nil means approval-required experiments are denied.
+	Approvals ApprovalClient
+	Now       func() time.Time
 }
 
 func (s *Service) now() time.Time {
@@ -130,8 +132,9 @@ func (s *Service) Create(ctx context.Context, p auth.Principal, req CreateReques
 		}
 		return deny(ErrPolicy, reasons...)
 	}
-	if chaosv1.ApprovalRequired(&spec, pol) {
-		return deny(ErrApprovalRequired, fmt.Sprintf("cluster policy requires %d approval(s) for this experiment; request approval from the namespace's approver group", chaosv1.MinApprovals(pol)))
+	needApproval := chaosv1.ApprovalRequired(&spec, pol)
+	if needApproval && s.Approvals == nil {
+		return deny(ErrApprovalRequired, fmt.Sprintf("cluster policy requires %d approval(s) for this experiment, and no approval service is configured", chaosv1.MinApprovals(pol)))
 	}
 	if Dangerous(&spec, pol) && (p.AuthTime == nil || s.now().Sub(*p.AuthTime) > StepUpMaxAge) {
 		// Not audited as a denial: the user is asked to re-authenticate and retry.
@@ -149,26 +152,133 @@ func (s *Service) Create(ctx context.Context, p auth.Principal, req CreateReques
 	exp.Name = "exp-" + strings.ReplaceAll(exp.ID, "-", "")[:12]
 	ev := base
 	ev.ExperimentID, ev.Resource, ev.Decision, ev.Result = exp.ID, "chaosexperiment/"+exp.Name, "allow", "accepted"
+	if needApproval {
+		exp.State, ev.Result = StatePendingApproval, "pending approval"
+	}
 	// Intent and its audit record commit together; if auditing fails, nothing is submitted.
 	if err := s.Store.CreateWithAudit(ctx, exp, ev); err != nil {
 		return nil, fmt.Errorf("record experiment: %w", err)
 	}
 
+	if needApproval {
+		// Nothing is created in the cluster yet: the approval poller submits the CR with the
+		// signed attestation once the namespace's approver group approves.
+		reqID, err := s.Approvals.Request(ctx, ApprovalInput{ExperimentID: exp.ID, ClusterID: spec.ClusterID,
+			Environment: pol.Spec.Environment, Spec: spec, RequesterName: p.DisplayName})
+		if err != nil {
+			_ = s.Store.SetState(ctx, exp.ID, StateSubmitFailed)
+			fail := ev
+			fail.Action, fail.Result = "experiment.approval_request", "failed: "+truncate(err.Error(), 200)
+			_ = s.Audit.Append(ctx, fail)
+			return nil, fmt.Errorf("%w: approval service: %v", ErrUnavailable, err)
+		}
+		if err := s.Store.SetApprovalRequest(ctx, exp.ID, reqID); err != nil {
+			return nil, fmt.Errorf("record approval request: %w", err)
+		}
+		exp.ApprovalRequest = reqID
+		s.Log.Info("experiment awaiting approval", slog.String("experiment", exp.Name), slog.String("approval_request", reqID))
+		return exp, nil
+	}
+	if err := s.submit(ctx, exp, ev, ""); err != nil {
+		return nil, err
+	}
+	s.Log.Info("experiment submitted", slog.String("experiment", exp.Name), slog.String("subject", p.Subject), slog.String("risk", string(exp.Risk)))
+	return exp, nil
+}
+
+// submit creates the ChaosExperiment (with the attestation annotation when approved).
+func (s *Service) submit(ctx context.Context, exp *Experiment, ev audit.Event, attestationToken string) error {
 	cr := &chaosv1.ChaosExperiment{ObjectMeta: metav1.ObjectMeta{Name: exp.Name,
-		Labels: map[string]string{"app.kubernetes.io/managed-by": "kubechaos-api"}}, Spec: spec}
+		Labels: map[string]string{"app.kubernetes.io/managed-by": "kubechaos-api"}}, Spec: exp.Spec}
+	if attestationToken != "" {
+		cr.Annotations = map[string]string{chaosv1.AnnotationApproval: attestationToken}
+	}
 	if err := s.Conn.Submit(ctx, cr); err != nil {
 		_ = s.Store.SetState(ctx, exp.ID, StateSubmitFailed)
 		fail := ev
 		fail.Action, fail.Result = "experiment.submit", "failed: "+truncate(err.Error(), 200)
 		_ = s.Audit.Append(ctx, fail)
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	if err := s.Store.SetState(ctx, exp.ID, StateSubmitted); err != nil {
 		s.Log.Error("record submitted state", slog.Any("error", err))
 	}
 	exp.State = StateSubmitted
-	s.Log.Info("experiment submitted", slog.String("experiment", exp.Name), slog.String("subject", p.Subject), slog.String("risk", string(exp.Risk)))
-	return exp, nil
+	return nil
+}
+
+// PollApprovals checks every experiment awaiting approval once: approved ones are submitted
+// with their attestation, rejected/expired ones are closed. Errors are retried next round.
+func (s *Service) PollApprovals(ctx context.Context) {
+	if s.Approvals == nil {
+		return
+	}
+	pending, err := s.Store.ListPendingApproval(ctx)
+	if err != nil {
+		s.Log.Warn("approvals: list pending", slog.Any("error", err))
+		return
+	}
+	for _, exp := range pending {
+		if exp.ApprovalRequest == "" {
+			continue
+		}
+		st, err := s.Approvals.Status(ctx, exp.ApprovalRequest)
+		if err != nil {
+			s.Log.Warn("approvals: status", slog.String("experiment", exp.Name), slog.Any("error", err))
+			continue
+		}
+		ev := audit.Event{ActorSubject: "system:approval-service", ClusterID: exp.ClusterID, ExperimentID: exp.ID,
+			Resource: "chaosexperiment/" + exp.Name, Parameters: mustJSON(map[string]string{"approvalRequestId": exp.ApprovalRequest})}
+		switch st.State {
+		case "Approved":
+			if st.Attestation == "" {
+				continue
+			}
+			ev.Action, ev.Decision, ev.Result = "experiment.approved", "allow", "submitted with attestation"
+			if err := s.Audit.Append(ctx, ev); err != nil {
+				s.Log.Error("audit write failed for approval", slog.Any("error", err))
+				continue // fail closed: do not submit what cannot be audited
+			}
+			if err := s.submit(ctx, exp, ev, st.Attestation); err != nil {
+				s.Log.Warn("approvals: submit", slog.String("experiment", exp.Name), slog.Any("error", err))
+				continue
+			}
+			s.Log.Info("approved experiment submitted", slog.String("experiment", exp.Name))
+		case "Rejected", "Expired":
+			state := StateApprovalRejected
+			if st.State == "Expired" {
+				state = StateApprovalExpired
+			}
+			ev.Action, ev.Decision, ev.Result = "experiment.approval_"+strings.ToLower(st.State), "deny", strings.ToLower(st.State)
+			_ = s.Audit.Append(ctx, ev)
+			if err := s.Store.SetState(ctx, exp.ID, state); err != nil {
+				s.Log.Warn("approvals: set state", slog.Any("error", err))
+				continue
+			}
+			exp.State = state
+		default:
+			continue
+		}
+		if s.Broker != nil {
+			if cur, err := s.Store.Get(ctx, exp.ID); err == nil {
+				s.Broker.Publish(exp.ID, events.Message{Type: "experiment", Data: cur})
+			}
+		}
+	}
+}
+
+// RunApprovals polls the approval service until ctx ends.
+func (s *Service) RunApprovals(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.PollApprovals(ctx)
+		}
+	}
 }
 
 // Cancel requests cancellation. Owners (experimenter) or approver/admin may cancel; cancelling

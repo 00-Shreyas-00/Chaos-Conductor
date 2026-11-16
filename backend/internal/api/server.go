@@ -104,6 +104,12 @@ func NewRouter(d Deps) http.Handler {
 	return r
 }
 
+// Middleware returns the standard hardening chain (request ID, access log, panic recovery,
+// security headers, body limit) for other KubeChaos HTTP services (the approval service).
+func Middleware(logger *slog.Logger, bodyLimit int64) []func(http.Handler) http.Handler {
+	return []func(http.Handler) http.Handler{httpx.RequestID, accessLog(logger), recoverer(logger), securityHeaders, maxBody(bodyLimit)}
+}
+
 // requireDep returns 503 when a dependency is not configured (fail closed).
 func requireDep(ok bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

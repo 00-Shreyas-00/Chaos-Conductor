@@ -77,7 +77,8 @@ BACKEND_DEV_ENV = set -a; . ./.env; set +a; export KUBECHAOS_ENV=development; \
 	export KUBECHAOS_OIDC_CLIENT_ID="kubechaos-api"; \
 	export KUBECHAOS_HTTP_ADDR="$${KUBECHAOS_HTTP_ADDR:-0.0.0.0:8080}"; \
 	if [ -f .kube/control-plane.kubeconfig ]; then export KUBECHAOS_KUBECONFIG="$$PWD/.kube/control-plane.kubeconfig" \
-	  KUBECHAOS_CLUSTER_ID=dev-kind-01 KUBECHAOS_CLUSTER_NAME="kind (development)"; fi
+	  KUBECHAOS_CLUSTER_ID=dev-kind-01 KUBECHAOS_CLUSTER_NAME="kind (development)"; fi; \
+	export KUBECHAOS_APPROVER_URL="$${KUBECHAOS_APPROVER_URL:-http://127.0.0.1:8081}"
 
 .PHONY: test
 test: ## Run Go unit tests
@@ -107,6 +108,47 @@ sessions-revoke: env ## Break-glass: revoke sessions, e.g. make sessions-revoke 
 .PHONY: api
 api: env ## Run the control plane API on :8080 inside the devcontainer (reachable by Keycloak for back-channel logout)
 	@$(BACKEND_DEV_ENV); go run ./backend/cmd/kubechaos-api serve
+
+## ---------- approval service ----------
+
+APPROVER_KID := dev-1
+ap_dsn = postgres://$(1):$${$(2)}@$(DB_HOST)/kubechaos_approval?sslmode=disable
+APPROVER_DEV_ENV = set -a; . ./.env; set +a; export KUBECHAOS_ENV=development; \
+	export KUBECHAOS_APPROVER_DATABASE_URL="$(call ap_dsn,approver_app,APPROVER_APP_PASSWORD)"; \
+	export KUBECHAOS_APPROVER_MIGRATE_DATABASE_URL="$(call ap_dsn,approver_migrator,APPROVER_MIGRATOR_PASSWORD)"; \
+	export KUBECHAOS_APPROVER_PUBLIC_URL="$${KUBECHAOS_APPROVER_PUBLIC_URL:-http://localhost:4201}"; \
+	export KUBECHAOS_APPROVER_OIDC_ISSUER="http://localhost:8180/realms/kubechaos"; \
+	export KUBECHAOS_APPROVER_HTTP_ADDR="$${KUBECHAOS_APPROVER_HTTP_ADDR:-0.0.0.0:8081}"; \
+	export KUBECHAOS_APPROVER_KID=$(APPROVER_KID) KUBECHAOS_APPROVER_CLUSTER_ID=dev-kind-01 \
+	  KUBECHAOS_APPROVER_CLUSTER_ENVIRONMENT=development \
+	  KUBECHAOS_APPROVER_ROUTES='{"demo":"/teams/demo/head-developers"}'
+
+.PHONY: approver-migrate
+approver-migrate: env ## Apply the approval database migrations (approver_migrator role)
+	@$(APPROVER_DEV_ENV); go run ./backend/cmd/kubechaos-approver migrate up
+
+.PHONY: approver
+approver: env ## Run the approval service on :8081 (approver UI API + internal API for the control plane)
+	@$(APPROVER_DEV_ENV); go run ./backend/cmd/kubechaos-approver serve
+
+.PHONY: approver-fe
+approver-fe: ## Serve the approver UI on 127.0.0.1:4201, proxying to the approval service (run `make approver` too)
+	cd frontend && npx ng serve approver
+
+.PHONY: approval-enable
+approval-enable: env ## Switch the kind ChaosPolicy to "approval Always", trusting the dev approval key
+	@$(APPROVER_DEV_ENV); pub=$$(go run ./backend/cmd/kubechaos-approver pubkey | awk '/publicKey/{print $$2}'); \
+	sed -e "s|__KID__|$(APPROVER_KID)|" -e "s|__PUBKEY__|$$pub|" deploy/k8s/chaospolicy-dev-approval.yaml.tmpl \
+	  | $(KUBECTL) apply --server-side --force-conflicts -f -
+	$(KUBECTL) apply -f deploy/demo/demo.yaml
+
+.PHONY: approval-disable
+approval-disable: ## Restore the default development ChaosPolicy (no approval)
+	$(KUBECTL) apply --server-side --force-conflicts -f deploy/k8s/chaospolicy-dev.yaml
+
+.PHONY: test-e2e-approval
+test-e2e-approval: env ## Approval end-to-end test: Keycloak + both services + operator (needs make approval-enable, make api, make approver)
+	@$(BACKEND_DEV_ENV); $(APPROVER_DEV_ENV); go test -count=1 -tags e2e -run E2E_Approval -v ./backend/internal/approvalapi/
 
 ## ---------- API types / CRDs ----------
 

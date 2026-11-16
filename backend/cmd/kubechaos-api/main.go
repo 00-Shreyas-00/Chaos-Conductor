@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kubechaos/kubechaos/backend/internal/api"
+	"github.com/kubechaos/kubechaos/backend/internal/approval"
 	"github.com/kubechaos/kubechaos/backend/internal/audit"
 	"github.com/kubechaos/kubechaos/backend/internal/auth"
 	"github.com/kubechaos/kubechaos/backend/internal/clusters"
@@ -135,6 +136,11 @@ func serve(ctx context.Context) error {
 		}
 		deps.Broker = events.NewBroker(5)
 		deps.Experiments = &experiments.Service{Store: store, Conn: conn, Audit: auditWriter, Broker: deps.Broker, Log: logger}
+		if cfg.ApproverURL != "" {
+			deps.Experiments.Approvals = approvalAdapter{c: &approval.Client{BaseURL: cfg.ApproverURL, Token: cfg.ApproverToken}}
+			go deps.Experiments.RunApprovals(ctx, 3*time.Second)
+			logger.Info("approval service enabled", slog.String("url", cfg.ApproverURL))
+		}
 		go deps.Experiments.Run(ctx) // mirror cluster status into the DB and to SSE subscribers
 		logger.Info("cluster connector enabled", slog.String("cluster", cfg.ClusterID))
 	} else {
@@ -170,6 +176,19 @@ func serve(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// approvalAdapter adapts the approval service client to the experiments service's interface.
+type approvalAdapter struct{ c *approval.Client }
+
+func (a approvalAdapter) Request(ctx context.Context, in experiments.ApprovalInput) (string, error) {
+	return a.c.Request(ctx, approval.SubmitInput{ExperimentID: in.ExperimentID, ClusterID: in.ClusterID,
+		Environment: in.Environment, Spec: in.Spec, RequesterName: in.RequesterName})
+}
+
+func (a approvalAdapter) Status(ctx context.Context, id string) (experiments.ApprovalStatus, error) {
+	st, err := a.c.Status(ctx, id)
+	return experiments.ApprovalStatus{ID: st.ID, State: st.State, Attestation: st.Attestation}, err
 }
 
 // verifyAudit walks the whole audit hash chain (break-glass / control node).

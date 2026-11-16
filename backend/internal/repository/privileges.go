@@ -13,6 +13,31 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// VerifyServiceRole is the approval service's variant: no superuser-like attributes, does not
+// own the database, cannot create objects. Fail closed on any error.
+func VerifyServiceRole(ctx context.Context, q Querier, schemas ...string) error {
+	var super, createRole, createDB, bypassRLS, ownsDB bool
+	if err := q.QueryRow(ctx, `
+		SELECT r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolbypassrls, pg_get_userbyid(d.datdba) = current_user
+		FROM pg_roles r, pg_database d WHERE r.rolname = current_user AND d.datname = current_database()`).
+		Scan(&super, &createRole, &createDB, &bypassRLS, &ownsDB); err != nil {
+		return fmt.Errorf("privilege check: %w", err)
+	}
+	if super || createRole || createDB || bypassRLS || ownsDB {
+		return errors.New("database role is over-privileged; refusing to start")
+	}
+	for _, s := range append([]string{"public"}, schemas...) {
+		var has bool
+		if err := q.QueryRow(ctx, `SELECT has_schema_privilege($1, 'CREATE')`, s).Scan(&has); err != nil {
+			return fmt.Errorf("privilege check: schema %s: %w", s, err)
+		}
+		if has {
+			return fmt.Errorf("database role can CREATE in schema %s; refusing to start", s)
+		}
+	}
+	return nil
+}
+
 // VerifyLeastPrivilege refuses to let the API run with a database role that could rewrite
 // history or change the schema. It fails closed: any query error (including a missing
 // audit table, i.e. migrations not applied) is a failure.

@@ -1,0 +1,23 @@
+# Development ChaosPolicy WITH four-eyes approval (make approval-enable). Identical to
+# chaospolicy-dev.yaml except that every experiment needs one attestation signed by the
+# approval service's key (__KID__ / __PUBKEY__ are filled in from .env by the Makefile).
+apiVersion: chaos.kubechaos.io/v1alpha1
+kind: ChaosPolicy
+metadata:
+  name: default
+spec:
+  environment: development
+  allowedFaults: [PodKill]
+  allowedNamespaces: [demo]
+  limits:
+    maxPodKillCount: 2
+    maxDuration: 10m
+    maxConcurrentExperiments: 2
+    minReadyReplicas: 1
+  approval:
+    required: Always
+    minApprovals: 1
+    maxAttestationAge: 1h
+    trustedKeys:
+      - kid: __KID__
+        publicKey: __PUBKEY__

@@ -67,10 +67,10 @@ func (s *SessionStore) CreateSession(ctx context.Context, sess auth.Session) err
 		roles[i] = string(r)
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO app.sessions (token_hash, identity_id, roles, acr, auth_time, csrf_token, idp_sid, idle_timeout_seconds, expires_at)
-		VALUES ($1, $2::uuid, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9)`,
+		INSERT INTO app.sessions (token_hash, identity_id, roles, acr, auth_time, csrf_token, idp_sid, idle_timeout_seconds, expires_at, groups)
+		VALUES ($1, $2::uuid, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9, $10)`,
 		sess.TokenHash, sess.IdentityID, roles, sess.ACR, sess.AuthTime, sess.CSRFToken,
-		sess.IdPSID, int(sess.IdleTimeout.Seconds()), sess.ExpiresAt)
+		sess.IdPSID, int(sess.IdleTimeout.Seconds()), sess.ExpiresAt, nonNil(sess.Groups))
 	return err
 }
 
@@ -84,7 +84,7 @@ func (s *SessionStore) LookupSession(ctx context.Context, tokenHash []byte) (aut
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT s.identity_id::text, s.roles, coalesce(s.acr, ''), s.auth_time, s.csrf_token, s.expires_at,
-		       coalesce(s.idp_sid, ''), s.idle_timeout_seconds,
+		       coalesce(s.idp_sid, ''), s.idle_timeout_seconds, s.groups,
 		       i.issuer, i.subject, coalesce(i.display_name, ''), coalesce(i.email, '')
 		FROM app.sessions s
 		JOIN app.identities i ON i.id = s.identity_id
@@ -93,7 +93,7 @@ func (s *SessionStore) LookupSession(ctx context.Context, tokenHash []byte) (aut
 		  AND s.last_seen_at > now() - make_interval(secs => s.idle_timeout_seconds)`,
 		tokenHash).
 		Scan(&sess.IdentityID, &roles, &sess.ACR, &sess.AuthTime, &sess.CSRFToken, &sess.ExpiresAt,
-			&sid, &idleSec, &ident.Issuer, &ident.Subject, &ident.DisplayName, &ident.Email)
+			&sid, &idleSec, &sess.Groups, &ident.Issuer, &ident.Subject, &ident.DisplayName, &ident.Email)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sess, ident, auth.ErrNotFound
 	}
@@ -174,4 +174,11 @@ func (s *SessionStore) DeleteExpired(ctx context.Context) error {
 	}
 	_, err := s.pool.Exec(ctx, `DELETE FROM app.login_requests WHERE expires_at <= now()`)
 	return err
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

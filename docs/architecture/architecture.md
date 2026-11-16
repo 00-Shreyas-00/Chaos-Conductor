@@ -695,6 +695,57 @@ Any experimenter (own experiments), approver (their team's namespaces) and admin
 **cancel** from the UI. Admin can **engage** the lock from the UI. Cancelling never needs
 approval or step-up, because stopping is cheap to allow. Lock **release** is CLI-only.
 
+### As implemented (milestone 7)
+- **Binary:** `backend/cmd/kubechaos-approver` (`serve`, `migrate up`, `pubkey`). It shares
+  the BFF auth package with the control plane but has its **own** database
+  (`kubechaos_approval`, roles `approver_migrator` / `approver_app`; the control-plane roles
+  cannot connect), its own Keycloak client (`kubechaos-approver`, group claim with full
+  paths) and its own origin (dev: SPA on `:4201`, API on `:8081`). It refuses to start if
+  its DB role can create objects or owns the database (`VerifyServiceRole`). Every
+  approver session uses the high-privilege lifetimes (10 min idle / 1 h absolute).
+- **Two HTTP surfaces** (`backend/internal/approvalapi`):
+  - `/api/v1/*` for approvers: session + CSRF; `GET /me`, `GET /requests` (only requests
+    routed to the caller's groups), `GET /requests/{id}`, `POST /requests/{id}/approve|reject`.
+    The signed attestation is **never** returned to a browser.
+  - `/internal/v1/*` for the control plane: `Authorization: Bearer <service token>`
+    (≥ 32 chars, constant-time compare); `POST /requests`, `GET /requests/{id}`
+    (state + attestation once approved). Unknown JSON fields are rejected, so a caller
+    cannot supply its own `specSha256`.
+- **Routing:** `KUBECHAOS_APPROVER_ROUTES` (`{"namespace": "/group/path"}`) is the
+  service's own configuration; a request whose namespaces route to no group, or to
+  different groups, is refused. The operator independently compares the attestation's
+  `approverGroup` with the namespace annotation `chaos.kubechaos.io/approver-group`.
+- **Decision rules** (`approval.Service.Decide`): member of the routed group; not the
+  requester; interactive login within 5 minutes (else `step_up_required`, and the UI
+  sends the approver through `/auth/login?stepUp=1`); one decision per approver; a
+  rejection is final; once `minApprovals` distinct approvals exist the service signs an
+  Ed25519 JWS (`attestation.Sign`, 1 h validity) and stores it. Pending requests expire
+  after 24 h. State changes are guarded (`UPDATE … WHERE state = 'Pending'`), and the
+  `UNIQUE(request, approver)` constraint makes concurrent double-votes impossible.
+- **Control plane:** when `ChaosPolicy` requires approval and `KUBECHAOS_APPROVER_URL` is
+  set, `POST /api/v1/experiments` records the experiment as `PendingApproval` (audited)
+  and submits an approval request; **nothing is created in the cluster**. A poller
+  (`experiments.Service.RunApprovals`, every 3 s) creates the CR with the
+  `chaos.kubechaos.io/approval` annotation once approved (audit `experiment.approved`;
+  the CR is not created if that audit write fails), or moves the experiment to
+  `ApprovalRejected` / `ApprovalExpired`. Without an approval service the request is
+  denied (`approval_required`), as before. If the approval service is unreachable at
+  submit time the experiment is marked `SubmitFailed`.
+- **Dev setup:** `make env approver-migrate keycloak-reset`, then `make approval-enable`
+  (renders `deploy/k8s/chaospolicy-dev-approval.yaml.tmpl` with the public key from
+  `kubechaos-approver pubkey`); `make approval-disable` restores the default policy.
+  `bob` and `carol` are in `/teams/demo/head-developers`; `alice` is not.
+- **Tests:** `approval` (rules, four-eyes with two approvals, expiry, idempotency, and an
+  attestation verified with the operator's own `attestation.Verify`), `approvalapi`
+  (service token, CSRF, visibility, attestation never sent to browsers, client), the
+  experiments poller, and `make test-e2e-approval`, which runs both services against real
+  Keycloak, Postgres, the operator and kind. That test covers: no CR before approval, a
+  non-member is refused, bob approves, the operator verifies the attestation and runs the
+  experiment to `Completed/Passed`, carol rejects a second experiment, which never
+  reaches the cluster, and the audit chain verifies.
+- **Not yet:** KMS/HSM signer (the dev seed comes from `.env`), a Kubernetes deployment
+  of the approval service, and cancelling a `PendingApproval` experiment from the SPA.
+
 ### What each compromise yields
 | Compromised | Can do | Cannot do |
 |-------------|--------|-----------|

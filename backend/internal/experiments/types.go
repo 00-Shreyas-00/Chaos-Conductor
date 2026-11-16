@@ -26,7 +26,8 @@ type Experiment struct {
 	Spec            chaosv1.ChaosExperimentSpec    `json:"spec"`
 	SpecSHA256      string                         `json:"specSha256"`
 	Risk            chaosv1.RiskLevel              `json:"risk"`
-	State           string                         `json:"state"` // Submitting | Submitted | SubmitFailed
+	State           string                         `json:"state"` // see States
+	ApprovalRequest string                         `json:"approvalRequestId,omitempty"`
 	Phase           string                         `json:"phase"`
 	Result          string                         `json:"result,omitempty"`
 	Score           *int32                         `json:"score,omitempty"`
@@ -49,7 +50,33 @@ const (
 	StateSubmitting   = "Submitting"
 	StateSubmitted    = "Submitted"
 	StateSubmitFailed = "SubmitFailed"
+	// Approval workflow (approval service): nothing exists in the cluster until approved.
+	StatePendingApproval  = "PendingApproval"
+	StateApprovalRejected = "ApprovalRejected"
+	StateApprovalExpired  = "ApprovalExpired"
 )
+
+// ApprovalClient is the control plane's view of the approval service.
+type ApprovalClient interface {
+	Request(ctx context.Context, in ApprovalInput) (string, error)
+	Status(ctx context.Context, requestID string) (ApprovalStatus, error)
+}
+
+// ApprovalInput is what the approval service needs to route and record a request.
+type ApprovalInput struct {
+	ExperimentID  string                      `json:"experimentId"`
+	ClusterID     string                      `json:"clusterId"`
+	Environment   string                      `json:"environment"`
+	Spec          chaosv1.ChaosExperimentSpec `json:"spec"`
+	RequesterName string                      `json:"requesterName"`
+}
+
+// ApprovalStatus is a request's state; Attestation is set once Approved.
+type ApprovalStatus struct {
+	ID          string `json:"id"`
+	State       string `json:"state"` // Pending | Approved | Rejected | Expired
+	Attestation string `json:"attestation"`
+}
 
 // Store persists experiments. Create commits the experiment and its audit event atomically.
 type Store interface {
@@ -61,6 +88,8 @@ type Store interface {
 	ApplyClusterStatus(ctx context.Context, id string, status *chaosv1.ChaosExperimentStatus, events []TimelineEvent) ([]TimelineEvent, error)
 	SetCancelRequested(ctx context.Context, id string) error
 	Events(ctx context.Context, id string) ([]TimelineEvent, error)
+	SetApprovalRequest(ctx context.Context, id, requestID string) error
+	ListPendingApproval(ctx context.Context) ([]*Experiment, error)
 }
 
 // Auditor appends audit events (outside a store transaction).

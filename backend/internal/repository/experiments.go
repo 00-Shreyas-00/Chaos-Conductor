@@ -66,6 +66,28 @@ func (s *ExperimentStore) SetState(ctx context.Context, id, state string) error 
 	return err
 }
 
+func (s *ExperimentStore) SetApprovalRequest(ctx context.Context, id, requestID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE app.experiments SET approval_request_id = $2::uuid, updated_at = now() WHERE id = $1`, id, requestID)
+	return err
+}
+
+func (s *ExperimentStore) ListPendingApproval(ctx context.Context) ([]*experiments.Experiment, error) {
+	rows, err := s.pool.Query(ctx, selectExperiment+`WHERE e.state = 'PendingApproval' ORDER BY e.created_at LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*experiments.Experiment
+	for rows.Next() {
+		e, err := scanExperiment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 func (s *ExperimentStore) SetCancelRequested(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE app.experiments SET cancel_requested = true, updated_at = now() WHERE id = $1`, id)
 	return err
@@ -74,7 +96,7 @@ func (s *ExperimentStore) SetCancelRequested(ctx context.Context, id string) err
 const selectExperiment = `
 	SELECT e.id::text, e.name, e.cluster_id, e.requested_by::text, i.issuer, i.subject, coalesce(i.display_name, ''),
 	       e.description, e.spec, e.spec_sha256, e.risk, e.state, e.phase, e.result, e.score, e.status,
-	       e.cancel_requested, e.created_at, e.updated_at
+	       e.cancel_requested, e.created_at, e.updated_at, coalesce(e.approval_request_id::text, '')
 	FROM app.experiments e JOIN app.identities i ON i.id = e.requested_by `
 
 func scanExperiment(row pgx.Row) (*experiments.Experiment, error) {
@@ -85,7 +107,7 @@ func scanExperiment(row pgx.Row) (*experiments.Experiment, error) {
 	)
 	err := row.Scan(&e.ID, &e.Name, &e.ClusterID, &e.RequesterID, &e.RequesterIssuer, &e.RequesterSubj, &e.RequesterName,
 		&e.Description, &spec, &e.SpecSHA256, &risk, &e.State, &e.Phase, &e.Result, &e.Score, &status,
-		&e.CancelRequested, &e.CreatedAt, &e.UpdatedAt)
+		&e.CancelRequested, &e.CreatedAt, &e.UpdatedAt, &e.ApprovalRequest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, experiments.ErrNotFound
 	}

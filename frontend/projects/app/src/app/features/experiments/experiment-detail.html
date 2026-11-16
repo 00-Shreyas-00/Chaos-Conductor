@@ -17,6 +17,13 @@
     {{ e.description || 'No description' }} · requested by {{ e.requesterName || e.requesterSubject }} ·
     risk {{ e.risk }} · cluster {{ e.clusterId }} · max {{ e.spec.maxDuration }}
   </p>
+  @switch (e.state) {
+    @case ('PendingApproval') {
+      <p class="message" data-testid="approval">Waiting for approval by the namespace's approver group. Nothing runs until it is approved.</p>
+    }
+    @case ('ApprovalRejected') { <p class="message" data-testid="approval">An approver rejected this experiment; it never ran.</p> }
+    @case ('ApprovalExpired') { <p class="message" data-testid="approval">The approval request expired; the experiment never ran.</p> }
+  }
   @if (e.status?.message) { <p class="message">{{ e.status?.message }}</p> }
 
   @if (e.status?.score !== undefined && e.status?.score !== null) {

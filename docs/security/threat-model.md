@@ -260,6 +260,15 @@ This is the threat the architecture is built around.
 - **Residual:** compromise of both control plane and approval service = experiments up
   to the ChaosPolicy ceiling. A social-engineered approver (a legitimate approval of a
   harmful spec) is bounded only by policy and recorded in audit.
+- **Implemented checks (milestone 7):** the internal API requires a ≥ 32-character bearer
+  token compared in constant time, and it rejects unknown fields, so a caller cannot
+  supply a hash. The browser API never returns the attestation. Requests are visible only
+  to the routed group and to the requester. Decisions require group membership, a
+  non-requester, and `auth_time` within 5 minutes. Only Pending requests can change
+  state (a guarded UPDATE). One decision per approver is enforced by a DB unique
+  constraint. In dev the signing seed lives in `.env` (gitignored); production must use
+  a KMS-backed signer. **Residual (dev):** the service token is a shared secret. Rotate
+  it with the signing key, or replace it with mTLS between the two services.
 
 ### T17 (additional) PromQL injection / expensive queries
 - **Mitigation:** no query field exists in any interface. Templates are compiled into

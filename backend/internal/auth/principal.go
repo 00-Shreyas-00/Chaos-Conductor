@@ -18,7 +18,12 @@ type Principal struct {
 	ACR       string
 	AuthTime  *time.Time
 	CSRFToken string
+	// Groups are the raw IdP group paths from login (e.g. /teams/payments/head-developers).
+	Groups []string
 }
+
+// InGroup reports whether the principal was a member of group at login.
+func (p Principal) InGroup(group string) bool { return group != "" && slices.Contains(p.Groups, group) }
 
 // HasRole reports whether the principal holds role r.
 func (p Principal) HasRole(r Role) bool { return slices.Contains(p.Roles, r) }

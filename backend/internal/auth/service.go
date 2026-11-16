@@ -93,6 +93,20 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// boundedGroups keeps at most 64 group paths of at most 255 characters (resource bounds).
+func boundedGroups(groups []string) []string {
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if len(out) == 64 {
+			break
+		}
+		if g != "" && len(g) <= 255 {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 func rolesJSON(roles []Role) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{"roles": roles})
 	return b
@@ -222,6 +236,7 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 		AuthTime:    claims.AuthTime,
 		CSRFToken:   newToken(),
 		IdPSID:      truncate(claims.SID, 255),
+		Groups:      boundedGroups(claims.Groups),
 		IdleTimeout: idle,
 		ExpiresAt:   s.now().Add(maxAge),
 	})
@@ -369,7 +384,7 @@ func (s *Service) RequireSession(next http.Handler) http.Handler {
 		p := Principal{
 			IdentityID: sess.IdentityID, Issuer: ident.Issuer, Subject: ident.Subject,
 			DisplayName: ident.DisplayName, Roles: sess.Roles, ACR: sess.ACR,
-			AuthTime: sess.AuthTime, CSRFToken: sess.CSRFToken,
+			AuthTime: sess.AuthTime, CSRFToken: sess.CSRFToken, Groups: sess.Groups,
 		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 	})

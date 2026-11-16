@@ -39,6 +39,7 @@ type Session struct {
 	AuthTime    *time.Time
 	CSRFToken   string
 	IdPSID      string        // IdP session ID ("sid" claim), for back-channel logout
+	Groups      []string      // raw IdP groups (bounded); the approval service routes on them
 	IdleTimeout time.Duration // per-session; shorter for high-privilege roles
 	ExpiresAt   time.Time
 }

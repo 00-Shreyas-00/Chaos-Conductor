@@ -1,0 +1,138 @@
+openapi: 3.1.0
+info:
+  title: KubeChaos Approval Service
+  version: 0.1.0
+  description: |
+    Four-eyes approval for chaos experiments (architecture §15). Served on its own origin.
+    `/api/v1` is for approvers (session cookie + CSRF header on state-changing requests).
+    `/internal/v1` is for the control plane only (bearer service token). The signed
+    attestation is returned only by the internal API.
+paths:
+  /healthz:
+    get: { operationId: getHealth, responses: { "200": { description: Alive } } }
+  /readyz:
+    get: { operationId: getReady, responses: { "200": { description: Ready }, "503": { description: Database unavailable } } }
+  /auth/login:
+    get:
+      operationId: login
+      parameters:
+        - { name: returnTo, in: query, schema: { type: string } }
+        - { name: stepUp, in: query, schema: { type: string, enum: ["1"] }, description: Force a fresh interactive login. }
+      responses: { "302": { description: Redirect to the identity provider } }
+  /auth/callback:
+    get: { operationId: callback, responses: { "302": { description: Session established } } }
+  /auth/logout:
+    post: { operationId: logout, responses: { "200": { description: Logged out } } }
+  /auth/backchannel-logout:
+    post: { operationId: backchannelLogout, responses: { "200": { description: Sessions revoked } } }
+  /api/v1/me:
+    get:
+      operationId: getMe
+      responses:
+        "200": { description: "The approver, groups and CSRF token", content: { application/json: { schema: { $ref: "#/components/schemas/Approver" } } } }
+        "401": { description: No session }
+  /api/v1/requests:
+    get:
+      operationId: listRequests
+      description: Requests routed to any of the caller's groups (newest first, at most 100).
+      responses:
+        "200": { description: Requests, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Request" } } } } } } }
+  /api/v1/requests/{id}:
+    get:
+      operationId: getRequest
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { description: Request, content: { application/json: { schema: { $ref: "#/components/schemas/Request" } } } }
+        "404": { description: Not found or not visible to the caller }
+  /api/v1/requests/{id}/approve:
+    post:
+      operationId: approveRequest
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/DecisionBody" } } } }
+      responses:
+        "200": { description: "Updated request; Approved once enough distinct approvers agree" }
+        "403": { description: "forbidden (not in the routed group, or the requester) or step_up_required" }
+        "409": { description: Already decided or expired }
+  /api/v1/requests/{id}/reject:
+    post:
+      operationId: rejectRequest
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/DecisionBody" } } } }
+      responses:
+        "200": { description: "Rejected; final" }
+        "403": { description: forbidden or step_up_required }
+        "409": { description: Already decided or expired }
+  /internal/v1/requests:
+    post:
+      operationId: submitRequest
+      security: [{ serviceToken: [] }]
+      description: Unknown fields are rejected; the spec hash is always recomputed here.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [experimentId, clusterId, environment, spec]
+              properties:
+                experimentId: { type: string, format: uuid }
+                clusterId: { type: string }
+                environment: { type: string, enum: [development, staging, production] }
+                spec: { type: object, description: ChaosExperiment spec }
+                requesterName: { type: string }
+      responses:
+        "201": { description: "Created (idempotent per experiment)", content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "400": { description: "Invalid: wrong cluster or environment, unrouted namespace, or invalid spec" }
+        "401": { description: Missing or wrong service token }
+  /internal/v1/requests/{id}:
+    get:
+      operationId: getRequestStatus
+      security: [{ serviceToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200": { description: "State, and the attestation once Approved", content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "401": { description: Missing or wrong service token }
+components:
+  securitySchemes:
+    serviceToken: { type: http, scheme: bearer }
+  parameters:
+    ID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+  schemas:
+    Approver:
+      type: object
+      properties:
+        subject: { type: string }
+        issuer: { type: string }
+        displayName: { type: string }
+        groups: { type: array, items: { type: string } }
+        authTime: { type: string, format: date-time }
+        csrfToken: { type: string }
+    DecisionBody:
+      type: object
+      additionalProperties: false
+      properties: { comment: { type: string, maxLength: 1000 } }
+    Status:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [Pending, Approved, Rejected, Expired] }
+        attestation: { type: string, description: Compact JWS (EdDSA); internal API only }
+    Request:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        experimentId: { type: string, format: uuid }
+        clusterId: { type: string }
+        environment: { type: string }
+        namespaces: { type: array, items: { type: string } }
+        approverGroup: { type: string }
+        spec: { type: object }
+        specSha256: { type: string }
+        risk: { type: string }
+        requesterSubject: { type: string }
+        requesterName: { type: string }
+        minApprovals: { type: integer }
+        state: { type: string, enum: [Pending, Approved, Rejected, Expired] }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        decisions: { type: array, items: { type: object } }

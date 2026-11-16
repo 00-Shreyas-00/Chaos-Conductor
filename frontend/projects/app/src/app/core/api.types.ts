@@ -76,7 +76,8 @@ export interface Experiment {
   description: string;
   spec: { clusterID: string; maxDuration: string; steps: Step[]; successCriteria?: Criterion[] };
   risk: string;
-  state: string;
+  state: 'Submitting' | 'Submitted' | 'SubmitFailed' | 'PendingApproval' | 'ApprovalRejected' | 'ApprovalExpired';
+  approvalRequestId?: string;
   phase: string;
   result?: string;
   score?: number;

@@ -1,0 +1,75 @@
+<mat-toolbar class="bar">
+  <span class="brand">KubeChaos Approvals</span>
+  <span class="spacer"></span>
+  @if (api.me(); as me) {
+    <span data-testid="user">{{ me.displayName || me.subject }}</span>
+  }
+</mat-toolbar>
+
+<main>
+  @switch (view()) {
+    @case ('checking') {
+      <p>Checking your session…</p>
+    }
+    @case ('anonymous') {
+      <section class="center">
+        <p>Approvers sign in with their own account. Every decision requires a recent login.</p>
+        <button mat-flat-button data-testid="login" (click)="api.login()">Sign in</button>
+      </section>
+    }
+    @case ('error') {
+      <p class="error">The approval service is unavailable. Try again shortly.</p>
+    }
+    @case ('ready') {
+      <h1>Waiting for your decision</h1>
+      @if (api.me()?.groups?.length === 0) {
+        <p class="muted" data-testid="no-groups">You are not a member of any approver group.</p>
+      }
+      @for (r of pending(); track r.id) {
+        <article class="card" data-testid="request">
+          <header>
+            <strong>{{ r.namespaces.join(', ') }}</strong>
+            <span class="risk risk-{{ r.risk.toLowerCase() }}">{{ r.risk }}</span>
+            <span class="muted">{{ r.clusterId }} · {{ r.environment }}</span>
+          </header>
+          <p>Requested by <strong>{{ r.requesterName || r.requesterSubject }}</strong> · expires {{ r.expiresAt | date: 'short' }}</p>
+          <ul>
+            @for (f of faults(r); track $index) {
+              <li>{{ f }}</li>
+            }
+          </ul>
+          <p class="muted">Max duration {{ r.spec.maxDuration }} · {{ r.decisions.length }} of {{ r.minApprovals }} approval(s) · spec {{ r.specSha256.slice(0, 12) }}</p>
+          @if (isOwn(r)) {
+            <p class="muted" data-testid="own">You requested this experiment; another approver must decide.</p>
+          } @else {
+            <label>
+              Comment
+              <textarea [(ngModel)]="comments[r.id]" maxlength="1000" rows="2"></textarea>
+            </label>
+            <div class="actions">
+              <button mat-flat-button data-testid="approve" [disabled]="busy() === r.id" (click)="decide(r, true)">Approve</button>
+              <button mat-stroked-button data-testid="reject" [disabled]="busy() === r.id" (click)="decide(r, false)">Reject</button>
+            </div>
+          }
+          @if (errors()[r.id]; as err) {
+            <p class="error" data-testid="error">{{ err }}</p>
+          }
+        </article>
+      } @empty {
+        <p class="muted" data-testid="empty">Nothing is waiting for approval.</p>
+      }
+
+      @if (decided().length > 0) {
+        <h2>Decided</h2>
+        @for (r of decided(); track r.id) {
+          <p data-testid="decided">
+            <strong>{{ r.state }}</strong> · {{ r.namespaces.join(', ') }} · {{ r.requesterName || r.requesterSubject }}
+            @for (d of r.decisions; track $index) {
+              <span class="muted"> · {{ d.decision }} by {{ d.approverName || d.approverSubject }}</span>
+            }
+          </p>
+        }
+      }
+    }
+  }
+</main>

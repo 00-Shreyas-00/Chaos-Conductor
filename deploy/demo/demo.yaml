@@ -12,6 +12,9 @@ metadata:
     chaos.kubechaos.io/enabled: "true"
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    # IdP group whose members approve experiments here (the operator checks attestations against it).
+    chaos.kubechaos.io/approver-group: /teams/demo/head-developers
 ---
 apiVersion: apps/v1
 kind: Deployment

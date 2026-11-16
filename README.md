@@ -4,14 +4,22 @@ A security-conscious, Kubernetes-native chaos testing platform. Users create **t
 policy-bounded** failure experiments; a cluster-local operator is the only component that
 acts on Kubernetes. There is no shell and no `kubectl` passthrough.
 
-**Status:** foundation phase. Done: architecture, dev environment, minimal Angular SPA,
-minimal Go API (deny-by-default), PostgreSQL migrations with append-only audit table,
-Keycloak/OIDC login (backend-for-frontend, server-side sessions, CSRF), minimal hardened
-Kubernetes operator (identity, leader election, least-privilege RBAC, NetworkPolicy),
-`ChaosExperiment` CRD with API-server-enforced validation, and the first fault primitive,
-**PodKill** (development clusters and opted-in namespaces only, at-most-once, never the
-last Ready replica).
-Next: hardened experiment lifecycle.
+**Status:** MVP complete for the development environment. Done:
+- **Login:** Keycloak/OIDC through a backend-for-frontend, with server-side sessions, CSRF
+  protection, step-up and back-channel logout.
+- **Safety controls:** a `ChaosPolicy` with blast-radius limits, and an emergency stop
+  (`kubechaosctl`) that works without the UI.
+- **Experiments:** declarative experiments built from typed steps, with **PodKill**
+  (at-most-once, never the last Ready replica). Success criteria produce a resilience
+  score, with optional Prometheus templates and no user-written PromQL.
+- **Control plane:** an API with a hash-chained append-only audit log and a live SSE
+  timeline.
+- **Angular SPA:** experiments, the timeline, emergency stop and audit.
+- **Four-eyes approval:** a separate approval service and approver UI. Ed25519
+  attestations are verified by the operator.
+
+Next: more fault primitives, and Kubernetes deployment of the control plane and the
+approval service.
 
 ### Operator (kind)
 ```bash
@@ -43,7 +51,7 @@ http://localhost:8180 (`KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`). After
 |------|---------|
 | `frontend/` | Angular SPA (`app`) and Approver UI (`approver`); client-side only, no SSR |
 | `backend/` | Go control plane: API, authN/Z, policy pre-check, audit, SSE |
-| `approver/` | Go Approval Service: four-eyes approvals, signs attestations |
+| `backend/cmd/kubechaos-approver` | Go Approval Service: four-eyes approvals, signs attestations (own DB, OIDC client, origin) |
 | `operator/` | Go operator: CRDs, admission webhook, reconciler, fault primitives |
 | `pkg/chaosapi/` | Shared Go module: CRD types, fault schemas, policy evaluator, metric templates |
 | `cli/` | `kubechaosctl`: emergency stop / unlock / audit verify (break-glass path) |
@@ -79,3 +87,17 @@ state, so recreate it with `make kind-down dev`.
 
 `.env` holds randomly generated **dev-only** secrets and is gitignored. All services bind
 to `127.0.0.1` only.
+
+### Four-eyes approval (approval service)
+```bash
+make env approver-migrate keycloak-reset   # new .env keys, approval DB schema, approver OIDC client
+make approval-enable                       # kind ChaosPolicy: approval Always, trusting the dev key
+make approver                              # approval service on :8081 (separate DB, OIDC client, origin)
+make approver-fe                           # approver UI on http://localhost:4201
+make api fe                                # control plane picks up KUBECHAOS_APPROVER_URL automatically
+make test-e2e-approval                     # full flow (stop `make api`/`make approver` first)
+make approval-disable                      # back to the default (no approval) policy
+```
+alice submits in the SPA (state `PendingApproval`, nothing in the cluster); bob or carol
+(`/teams/demo/head-developers`) approve in the approver UI after a fresh login; the
+control plane then creates the CR with the signed attestation, which the operator verifies.

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/stdlib"
@@ -14,14 +15,35 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// newProvider builds a goose provider over the embedded migrations.
+// newProvider builds a goose provider over the embedded control-plane migrations.
 func newProvider(dsn string, o PoolOptions) (*goose.Provider, *sql.DB, error) {
+	return newProviderFS(dsn, o, mustSub(migrationsFS, "migrations"))
+}
+
+// MigrateUpFS applies the migrations in fsys (used by the approval service's own database).
+func MigrateUpFS(ctx context.Context, dsn string, o PoolOptions, fsys fs.FS, logger *slog.Logger) error {
+	p, db, err := newProviderFS(dsn, o, fsys)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	results, err := p.Up(ctx)
+	for _, r := range results {
+		logger.InfoContext(ctx, "migration applied", slog.Int64("migration_version", r.Source.Version), slog.String("file", r.Source.Path))
+	}
+	if err != nil {
+		return fmt.Errorf("migrate up: %w", err)
+	}
+	return nil
+}
+
+func newProviderFS(dsn string, o PoolOptions, fsys fs.FS) (*goose.Provider, *sql.DB, error) {
 	cfg, err := ParsePoolConfig(dsn, o)
 	if err != nil {
 		return nil, nil, err
 	}
 	db := stdlib.OpenDB(*cfg.ConnConfig)
-	p, err := goose.NewProvider(goose.DialectPostgres, db, mustSub(migrationsFS, "migrations"))
+	p, err := goose.NewProvider(goose.DialectPostgres, db, fsys)
 	if err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("migration provider: %w", err)

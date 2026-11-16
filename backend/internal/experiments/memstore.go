@@ -122,6 +122,28 @@ func (m *MemStore) ApplyClusterStatus(_ context.Context, id string, st *chaosv1.
 	return stored, nil
 }
 
+func (m *MemStore) SetApprovalRequest(_ context.Context, id, requestID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.byID[id]; ok {
+		e.ApprovalRequest = requestID
+	}
+	return nil
+}
+
+func (m *MemStore) ListPendingApproval(_ context.Context) ([]*Experiment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*Experiment
+	for _, e := range m.byID {
+		if e.State == StatePendingApproval {
+			c := *e
+			out = append(out, &c)
+		}
+	}
+	return out, nil
+}
+
 func (m *MemStore) Events(_ context.Context, id string) ([]TimelineEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
